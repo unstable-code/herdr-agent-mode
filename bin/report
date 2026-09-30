@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Claude Code hook entry point: read the hook payload on stdin and report the pane's permission mode.
+#
+# Registered for UserPromptSubmit, PreToolUse and Stop, which are the events that carry
+# `permission_mode`, plus SessionEnd, which carries none and means "clear the tokens".
+#
+# This runs before every single tool call, so the work per run is kept to two processes: one jq to
+# read the payload and one herdr to report it. Everything else is a bash builtin.
+#
+# Everything here fails closed and silently. A hook that writes to stderr or exits non-zero is a
+# hook the user has to think about, and nothing this plugin does is worth interrupting a session
+# for: at worst the sidebar keeps showing the previous mode.
+set -u
+
+# shellcheck source=bin/lib.sh
+. "${0%/*}/lib.sh"
+
+in_herdr_pane || exit 0
+command -v jq >/dev/null 2>&1 || exit 0
+
+# One jq pass over stdin for both fields. Reading the payload into a variable first and then
+# running jq twice would cost an extra process and two temporary files (bash writes a here-string
+# to disk); letting jq read stdin directly also drains it, so Claude Code never sees a broken pipe.
+IFS=$'\t' read -r event mode < <(
+    jq -r '[(.hook_event_name // ""), (.permission_mode // "")] | @tsv' 2>/dev/null
+) || exit 0
+
+# SessionEnd is the only reason this plugin ever clears a pane by itself: Claude is gone, so the
+# mode it was running under is no longer true of that pane.
+if [ "$event" = "SessionEnd" ]; then
+    publish "$HERDR_PANE_ID"
+    exit 0
+fi
+
+# An event that carries no mode says nothing about the pane, so leave what is there alone rather
+# than clearing it. Claude adds fields over time; a future event without the field must not blank
+# a correct value.
+[ -n "$mode" ] || exit 0
+
+# Claude's own values, as of 2.1.285: default, acceptEdits, plan, auto, dontAsk, bypassPermissions.
+publish "$HERDR_PANE_ID" "$mode"
+exit 0

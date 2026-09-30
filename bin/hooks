@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Register or remove this plugin's Claude Code hooks in ~/.claude/settings.json.
+#
+# Usage: hooks --install | --remove | --status
+#
+# The hooks are what make the plugin work, and they live in a file Claude Code and other tools also
+# write. So this only ever touches its own entries and leaves every other hook and setting alone.
+set -u
+
+# shellcheck source=bin/lib.sh
+. "${0%/*}/lib.sh"
+
+report_bin="${0%/*}/report"
+case "$report_bin" in /*) ;; *) report_bin="$PWD/$report_bin" ;; esac
+
+# Ownership is decided by this path fragment, not by the full command string. A plugin that moves —
+# linked from a working tree today, installed under ~/.config/herdr/plugins tomorrow — writes a new
+# absolute path, and matching on equality would leave the old entry behind for Claude to run before
+# every tool call, forever, silently. The fragment survives the move.
+owned='herdr-agent-mode/bin/report'
+
+# Events that carry permission_mode, plus SessionEnd, which means the agent is gone.
+events="UserPromptSubmit PreToolUse Stop SessionEnd"
+
+command -v jq >/dev/null 2>&1 || {
+    notify "Agent mode" "jq is required"
+    echo "jq is required" >&2
+    exit 1
+}
+
+[ -e "$settings_file" ] || {
+    notify "Agent mode" "no Claude settings file at $settings_file"
+    echo "no Claude settings file at $settings_file" >&2
+    echo "start Claude Code once, or set CLAUDE_CONFIG_DIR" >&2
+    exit 1
+}
+
+jq -e . "$settings_file" >/dev/null 2>&1 || {
+    notify "Agent mode" "$settings_file is not valid JSON"
+    echo "$settings_file is not valid JSON — refusing to touch it" >&2
+    exit 1
+}
+
+# Drop every entry of ours, wherever it sits. Both --install and --remove start here: installing
+# runs the same sweep and then adds the current path back, so a stale entry cannot survive either
+# operation and neither can a duplicate.
+# shellcheck disable=SC2016  # jq program: $owned and $events are jq variables, not shell ones.
+prune='.hooks //= {}
+  | .hooks |= with_entries(.value = [.value[]
+      | .hooks = [(.hooks // [])[] | select((.command // "") | contains($owned) | not)]
+      | select((.hooks | length) > 0)])
+  | .hooks |= with_entries(select((.value | length) > 0))'
+
+# shellcheck disable=SC2016  # same: jq variables.
+add='| reduce ($events | split(" "))[] as $event (.;
+      .hooks[$event] //= []
+      | .hooks[$event] += [{hooks: [{type: "command", command: $cmd, timeout: 5}]}])'
+
+# Write back through the path, never over it. That file is commonly a symlink into a dotfiles
+# working tree, and `mv`-ing a temporary file onto it would replace the link with a regular file.
+apply() {
+    local program=$1 updated
+    updated=$(jq --arg cmd "$report_bin" --arg owned "$owned" --arg events "$events" \
+        "$program" "$settings_file") || return 1
+    printf '%s\n' "$updated" >"$settings_file" || return 1
+    return 0
+}
+
+owned_count() {
+    jq --arg owned "$owned" '
+        [(.hooks // {}) | to_entries[] | .value[]? | (.hooks // [])[]?
+         | select((.command // "") | contains($owned))] | length' "$settings_file" 2>/dev/null
+}
+
+case "${1:---status}" in
+    --install)
+        apply "$prune $add" || {
+            notify "Agent mode" "could not write $settings_file"
+            echo "could not write $settings_file" >&2
+            exit 1
+        }
+        notify "Agent mode hooks installed" "$(owned_count) hook(s): $events"
+        echo "installed $(owned_count) hook(s) for $events"
+        echo "running Claude sessions pick this up without restarting"
+        ;;
+    --remove)
+        apply "$prune" || {
+            notify "Agent mode" "could not write $settings_file"
+            echo "could not write $settings_file" >&2
+            exit 1
+        }
+        notify "Agent mode hooks removed" "run the clear action to drop the tokens already on panes"
+        echo "removed this plugin's hooks from $settings_file"
+        echo "run the clear action to drop the tokens already on your panes"
+        ;;
+    --status)
+        count=$(owned_count)
+        notify "Agent mode hooks" "${count:-0} installed"
+        echo "settings: $settings_file"
+        echo "command:  $report_bin"
+        echo "hooks installed: ${count:-0}"
+        ;;
+    *)
+        echo "usage: hooks --install | --remove | --status" >&2
+        exit 2
+        ;;
+esac
+exit 0

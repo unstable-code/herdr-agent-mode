@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Drop this plugin's tokens from every pane that carries them.
+#
+# For turning the display off without removing the hooks, and for a pane whose Claude session ended
+# without its SessionEnd hook running — Claude killed rather than exited, say. A pane that is closed
+# outright needs nothing: herdr drops the tokens with the pane.
+set -u
+
+# shellcheck source=bin/lib.sh
+. "${0%/*}/lib.sh"
+
+command -v jq >/dev/null 2>&1 || {
+    notify "Agent mode" "jq is required"
+    echo "jq is required" >&2
+    exit 1
+}
+
+panes=$("$herdr" pane list 2>/dev/null) || panes=""
+[ -n "$panes" ] || {
+    notify "Agent mode" "herdr is not answering — is the server running?"
+    echo "herdr is not answering — is the server running?" >&2
+    exit 1
+}
+
+cleared=0
+while IFS= read -r pane_id; do
+    [ -n "$pane_id" ] || continue
+    publish "$pane_id"
+    cleared=$((cleared + 1))
+done < <(jq -r --arg g "$glyph_token" --arg l "$label_token" \
+    '.result.panes[] | select(.tokens[$g]? != null or .tokens[$l]? != null) | .pane_id' \
+    <<<"$panes" 2>/dev/null)
+
+notify "Agent mode" "cleared $cleared pane(s)"
+echo "cleared $cleared pane(s)"
+exit 0

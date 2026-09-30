@@ -1,0 +1,45 @@
+# herdr-agent-mode: show which permission mode each Claude pane is in, in the agents sidebar.
+#
+# herdr knows an agent's lifecycle state (working, idle, blocked) but not the terms it works under.
+# "Claude is working" reads the same whether every edit is being approved by hand or none of them
+# are, and that difference is the one you want before you look away from a pane.
+#
+# The value can only come from Claude Code: its hooks carry `permission_mode` on stdin. A hook runs
+# inside the pane, where HERDR_PANE_ID already points at it, so the hook reports the pane token
+# itself and this plugin needs no event hooks of its own.
+
+id = "unstable-code.herdr-agent-mode"
+name = "herdr-agent-mode"
+version = "0.1.0"
+description = "Claude's permission mode (manual, accept edits, plan, auto) as an agents sidebar token."
+min_herdr_version = "0.9.0"
+platforms = ["linux", "macos"]
+
+# Register or remove the Claude Code hooks that feed this plugin. Installing them is a separate,
+# asked-for step rather than something the startup hook does: the hooks live in the user's
+# settings.json, which is theirs to own.
+[[actions]]
+id = "install"
+title = "Install Claude hooks for agent mode"
+contexts = ["pane", "workspace"]
+command = ["bin/hooks", "--install"]
+
+[[actions]]
+id = "uninstall"
+title = "Remove Claude hooks for agent mode"
+contexts = ["pane", "workspace"]
+command = ["bin/hooks", "--remove"]
+
+# Drop the token from every pane, for turning the display off without touching the hooks.
+[[actions]]
+id = "clear"
+title = "Clear agent mode tokens"
+contexts = ["pane", "workspace"]
+command = ["bin/clear"]
+
+# What is registered right now, for when the sidebar is blank and the question is which half broke.
+[[actions]]
+id = "status"
+title = "Agent mode hook status"
+contexts = ["pane", "workspace"]
+command = ["bin/hooks", "--status"]
