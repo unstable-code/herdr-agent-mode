@@ -13,11 +13,29 @@ set -u
 report_bin="${0%/*}/report"
 case "$report_bin" in /*) ;; *) report_bin="$PWD/$report_bin" ;; esac
 
-# Ownership is decided by this path fragment, not by the full command string. A plugin that moves —
-# linked from a working tree today, installed under ~/.config/herdr/plugins tomorrow — writes a new
-# absolute path, and matching on equality would leave the old entry behind for Claude to run before
-# every tool call, forever, silently. The fragment survives the move.
-owned='herdr-agent-mode/bin/report'
+# Claude runs a hook command through /bin/sh, so a registered path that does not exist on this
+# machine fails *before* bin/report can decline quietly: Claude shows `No such file or directory`
+# on every turn, four times over. That is not hypothetical — ~/.claude/settings.json is commonly a
+# symlink into a dotfiles tree shared by several machines, and a path written by a `herdr plugin
+# link` install on one of them does not exist on the others (issue #1). So the command carries its
+# own existence check and exits 0 when the script is gone.
+#
+# `exec` keeps the hook payload on stdin and spends no extra process.
+sh_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+# shellcheck disable=SC2016  # the $p in the printf format is for /bin/sh to expand, not this shell.
+hook_command() {
+    printf 'p=%s; [ -x "$p" ] || exit 0; exec "$p"  # %s\n' "$(sh_quote "$report_bin")" "$marker"
+}
+
+# Ownership is decided by this marker, not by the command string or the path inside it. A plugin
+# that moves — linked from a working tree today, installed under ~/.config/herdr/plugins tomorrow —
+# writes a different path, and matching on equality would leave the old entry behind for Claude to
+# run before every tool call, forever. A path fragment would survive the move but not the quoting:
+# a directory with an apostrophe in it splits the fragment apart. herdr's own Claude integration
+# marks its hook the same way, with `# HERDR_INTEGRATION_ID=claude`.
+marker='herdr-agent-mode'
+# Entries written before the marker existed are plain absolute paths — they contain the plugin
+# directory name, so this same marker sweeps them too.
 
 # Events that carry permission_mode, plus SessionEnd, which means the agent is gone.
 events="UserPromptSubmit PreToolUse Stop SessionEnd"
@@ -44,10 +62,10 @@ jq -e . "$settings_file" >/dev/null 2>&1 || {
 # Drop every entry of ours, wherever it sits. Both --install and --remove start here: installing
 # runs the same sweep and then adds the current path back, so a stale entry cannot survive either
 # operation and neither can a duplicate.
-# shellcheck disable=SC2016  # jq program: $owned and $events are jq variables, not shell ones.
+# shellcheck disable=SC2016  # jq program: $marker and $events are jq variables, not shell ones.
 prune='.hooks //= {}
   | .hooks |= with_entries(.value = [.value[]
-      | .hooks = [(.hooks // [])[] | select((.command // "") | contains($owned) | not)]
+      | .hooks = [(.hooks // [])[] | select((.command // "") | contains($marker) | not)]
       | select((.hooks | length) > 0)])
   | .hooks |= with_entries(select((.value | length) > 0))'
 
@@ -60,16 +78,16 @@ add='| reduce ($events | split(" "))[] as $event (.;
 # working tree, and `mv`-ing a temporary file onto it would replace the link with a regular file.
 apply() {
     local program=$1 updated
-    updated=$(jq --arg cmd "$report_bin" --arg owned "$owned" --arg events "$events" \
+    updated=$(jq --arg cmd "$(hook_command)" --arg marker "$marker" --arg events "$events" \
         "$program" "$settings_file") || return 1
     printf '%s\n' "$updated" >"$settings_file" || return 1
     return 0
 }
 
 owned_count() {
-    jq --arg owned "$owned" '
+    jq --arg marker "$marker" '
         [(.hooks // {}) | to_entries[] | .value[]? | (.hooks // [])[]?
-         | select((.command // "") | contains($owned))] | length' "$settings_file" 2>/dev/null
+         | select((.command // "") | contains($marker))] | length' "$settings_file" 2>/dev/null
 }
 
 case "${1:---status}" in

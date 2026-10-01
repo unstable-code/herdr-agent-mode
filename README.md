@@ -80,12 +80,29 @@ run rather than something that happens on its own:
 herdr plugin action invoke unstable-code.herdr-agent-mode.install
 ```
 
-It leaves every other hook and setting alone, and it takes ownership of its own entries by the path
-fragment `herdr-agent-mode/bin/report` rather than by the exact command — so installing again after
-the plugin moved (a linked working tree today, an installed copy tomorrow) removes the old entry
-instead of leaving Claude running a command that is no longer there. The `uninstall` action takes
-the hooks back out, and `status` says how many are registered. Running Claude sessions pick up a
-change without restarting.
+It leaves every other hook and setting alone, and it owns its entries by a marker comment rather
+than by the command string — so installing again after the plugin moved (a linked working tree
+today, an installed copy tomorrow) removes the old entry instead of leaving Claude running a command
+that is no longer there. The `uninstall` action takes the hooks back out, and `status` says how many
+are registered. Running Claude sessions pick up a change without restarting.
+
+The registered command carries its own existence check:
+
+```sh
+p='/path/to/herdr-agent-mode/bin/report'; [ -x "$p" ] || exit 0; exec "$p"  # herdr-agent-mode
+```
+
+Claude runs a hook command through `/bin/sh`, which fails *before* the script can decline quietly,
+so a path that does not exist on this machine would print `No such file or directory` on every turn,
+four times over. That is the ordinary case rather than an edge one: `~/.claude/settings.json` is
+commonly a symlink into a dotfiles tree shared by several machines, and only one of them ran the
+install action.
+
+⚠️ Install the plugin the same way on every machine. `herdr plugin install` puts it under a
+directory named from the plugin id alone — the suffix is the first six bytes of `sha256(id)`, with
+no commit or hostname in it — so the path is identical everywhere and survives updates. `herdr
+plugin link` writes wherever your working tree happens to sit, which is what makes a shared
+settings file disagree with itself.
 
 Finally, put a token in the sidebar. Two are published, and a row can use either or both:
 
@@ -164,6 +181,8 @@ and against a stand-in `settings.json` holding a foreign hook.
 | `SessionEnd` | both tokens cleared |
 | `clear` action | `cleared 1 pane(s)`, both tokens gone |
 | `install` over an entry left by an older path | stale entry removed, a foreign hook and herdr's own `SessionStart` untouched, unrelated settings unchanged |
+| The registered command run by `/bin/sh` with the script missing | exit 0, nothing printed — the case issue #1 reported |
+| The same, with an apostrophe in the plugin path | quoted correctly, runs, and `uninstall` still finds it by its marker |
 | `uninstall` | only this plugin's entries gone |
 | Against live Claude Code 2.1.285 | `permission_mode` present on `UserPromptSubmit`, `PreToolUse` and `Stop`, absent on `Notification`; a hook added to settings took effect without restarting the session |
 

@@ -76,10 +76,26 @@ herdr plugin link ./herdr-agent-mode
 herdr plugin action invoke unstable-code.herdr-agent-mode.install
 ```
 
-다른 훅과 설정은 건드리지 않는다. 자기 항목은 명령 전체가 아니라 경로 조각 `herdr-agent-mode/bin/report`
-로 식별하므로, 플러그인이 옮겨간 뒤(오늘은 링크한 작업트리, 내일은 설치본) 다시 설치해도 옛 항목이 남지
-않는다 — 남으면 Claude 가 도구 호출마다 없는 명령을 부르게 된다. `uninstall` 이 되돌리고, `status` 가
-몇 개 등록돼 있는지 알려 준다. 돌고 있는 Claude 세션도 재시작 없이 반영된다.
+다른 훅과 설정은 건드리지 않는다. 자기 항목은 명령 문자열이 아니라 마커 주석으로 식별하므로, 플러그인이
+옮겨간 뒤(오늘은 링크한 작업트리, 내일은 설치본) 다시 설치해도 옛 항목이 남지 않는다 — 남으면 Claude 가
+도구 호출마다 없는 명령을 부르게 된다. `uninstall` 이 되돌리고, `status` 가 몇 개 등록돼 있는지 알려
+준다. 돌고 있는 Claude 세션도 재시작 없이 반영된다.
+
+등록되는 명령은 자기 존재 검사를 달고 간다.
+
+```sh
+p='/path/to/herdr-agent-mode/bin/report'; [ -x "$p" ] || exit 0; exec "$p"  # herdr-agent-mode
+```
+
+Claude 는 훅 명령을 `/bin/sh` 로 돌리는데, 이 실패는 스크립트가 조용히 빠지기 **전에** 일어난다. 그래서
+이 기기에 없는 경로가 등록돼 있으면 매 턴마다 `No such file or directory` 가 네 번씩 찍힌다. 드문 일이
+아니다 — `~/.claude/settings.json` 은 보통 여러 기기가 공유하는 dotfiles 트리로의 심링크이고, install
+액션을 돌린 기기는 그중 하나뿐이다.
+
+⚠️ 모든 기기에서 같은 방식으로 설치할 것. `herdr plugin install` 은 플러그인 id 만으로 만든 디렉터리에
+넣는다 — 접미사가 `sha256(id)` 의 앞 6바이트라 커밋도 호스트명도 들어가지 않아, 경로가 어디서나 같고
+업데이트해도 유지된다. `herdr plugin link` 는 작업트리가 있는 자리에 쓰므로, 공유 설정 파일이 기기마다
+어긋나는 원인이 된다.
 
 마지막으로 토큰을 사이드바에 올린다. 토큰은 둘이고, 행은 하나만 써도 되고 둘 다 써도 된다.
 
@@ -154,6 +170,8 @@ auto `#FFC107`(Claude 의 `warning` 토큰). manual 은 거기서 고유한 색 
 | `SessionEnd` | 두 토큰 삭제 |
 | `clear` 액션 | `cleared 1 pane(s)`, 두 토큰 사라짐 |
 | 옛 경로 항목이 남은 상태에서 `install` | 옛 항목 제거, 남의 훅과 herdr 자신의 `SessionStart` 및 무관한 설정은 그대로 |
+| 등록된 명령을 `/bin/sh` 로 실행, 스크립트는 없는 상태 | 종료 코드 0, 아무 출력 없음 — 이슈 #1 이 보고한 경우 |
+| 같은 조건에 플러그인 경로에 작은따옴표가 든 경우 | 쿼팅이 맞고 실행되며, `uninstall` 이 마커로 그대로 찾아낸다 |
 | `uninstall` | 이 플러그인 항목만 사라짐 |
 | 실제 Claude Code 2.1.285 에 대고 | `permission_mode` 가 `UserPromptSubmit`·`PreToolUse`·`Stop` 에 있고 `Notification` 에는 없음. 설정에 넣은 훅이 세션 재시작 없이 적용됨 |
 
