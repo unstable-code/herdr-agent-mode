@@ -8,6 +8,20 @@ label_token=mode_label
 # shellcheck disable=SC2034  # bin/hooks uses it; this file is sourced, not run.
 settings_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
 
+# Where Claude's hooks point: bin/report through a symlink to this bin/ directory, kept in the
+# plugin's state directory. herdr names that directory from the plugin id alone, so it is the same
+# path on every machine and across updates — unlike the installation itself, which since herdr 0.9.5
+# is a new directory on every install and update (issue #2). The link is to the directory, not to
+# the script, because bin/report finds lib.sh next to its own path. The install action places the
+# link; the [[startup]] hook moves it after an update.
+#
+# The fallback copies herdr's layout (config/io.rs state_dir + plugin_paths.rs plugin_state_dir), for
+# running bin/hooks by hand. It holds only while the shell and the herdr server agree on
+# XDG_STATE_HOME; the actions get the real directory from herdr.
+state_dir=${HERDR_PLUGIN_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/herdr/plugins/$source_id}
+# shellcheck disable=SC2034  # bin/hooks uses it.
+bin_link="$state_dir/bin"
+
 # This plugin has no config file, and that is a decision rather than an omission. A sidebar rule
 # matches the token's own value, so any setting that changed the shape of that value would silently
 # stop the user's color rules from matching — a failure that looks exactly like "the mode is grey".

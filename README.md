@@ -81,16 +81,23 @@ herdr plugin action invoke unstable-code.herdr-agent-mode.install
 ```
 
 It leaves every other hook and setting alone, and it owns its entries by a marker comment rather
-than by the command string — so installing again after the plugin moved (a linked working tree
-today, an installed copy tomorrow) removes the old entry instead of leaving Claude running a command
-that is no longer there. The `uninstall` action takes the hooks back out, and `status` says how many
-are registered. Running Claude sessions pick up a change without restarting.
+than by the command string, so installing again replaces an older entry of its own instead of adding
+a second one. The `uninstall` action takes the hooks back out (run it before `herdr plugin
+uninstall`, which does not), and `status` shows the link and the registered command. Running Claude sessions pick up a change without restarting.
 
-The registered command carries its own existence check:
+The registered command names a link, not the installation, and carries its own existence check:
 
 ```sh
-p='/path/to/herdr-agent-mode/bin/report'; [ -x "$p" ] || exit 0; exec "$p"  # herdr-agent-mode
+p="$HOME"'/.local/state/herdr/plugins/unstable-code.herdr-agent-mode/bin/report'; [ -x "$p" ] || exit 0; exec "$p"  # herdr-agent-mode
 ```
+
+The link lives in the plugin's state directory, which herdr names from the plugin id alone, and
+points at the `bin/` directory of whichever installation is current. Since herdr 0.9.5 every
+install and `herdr plugin update` goes into a new directory (`…/github-installations/<id>-<hash>/<pid>-<n>/`), so
+a command naming the installation would stop working at the first update — silently, because of the
+check below. The install action creates the link; a `[[startup]]` hook moves it to the new
+installation on the next server start. `settings.json` is not touched by either, and is only rewritten
+by the install action when its entries actually change.
 
 Claude runs a hook command through `/bin/sh`, which fails *before* the script can decline quietly,
 so a path that does not exist on this machine would print `No such file or directory` on every turn,
@@ -98,11 +105,12 @@ four times over. That is the ordinary case rather than an edge one: `~/.claude/s
 commonly a symlink into a dotfiles tree shared by several machines, and only one of them ran the
 install action.
 
-⚠️ Install the plugin the same way on every machine. `herdr plugin install` puts it under a
-directory named from the plugin id alone — the suffix is the first six bytes of `sha256(id)`, with
-no commit or hostname in it — so the path is identical everywhere and survives updates. `herdr
-plugin link` writes wherever your working tree happens to sit, which is what makes a shared
-settings file disagree with itself.
+Because the link path depends only on the plugin id and your home directory, a `settings.json` shared
+between machines names the same path on all of them, however each one installed the plugin. Run
+the install action on one of them; every other machine sharing the file gets its link from the
+startup hook the next time its herdr server starts. Upgrading from a version before the link: run the
+install action once more — it replaces the old entry, which named the installation, and until then
+the startup hook shows a notification saying so.
 
 Finally, put a token in the sidebar. Two are published, and a row can use either or both:
 
@@ -184,6 +192,13 @@ and against a stand-in `settings.json` holding a foreign hook.
 | The registered command run by `/bin/sh` with the script missing | exit 0, nothing printed — the case issue #1 reported |
 | The same, with an apostrophe in the plugin path | quoted correctly, runs, and `uninstall` still finds it by its marker |
 | `uninstall` | only this plugin's entries gone |
+| Install over an entry that named an installation directly (herdr 0.9.5) | old entry replaced by `p="$HOME"'/…/bin/report'`, the `bin` link pointing at the installation, a foreign hook and other settings untouched |
+| Install again with nothing changed | `settings.json` not rewritten (same mtime) |
+| "Update" on a machine without the link: the plugin re-registered from a second directory, the link deleted, server restarted | the `[[startup]]` hook made the link to the new `bin/` from the entries in `settings.json`, which stayed byte-identical |
+| An entry from before the link, then a server start | link made, and one notification asking for the install action; no notification once the entry is current |
+| The first installation deleted, then the registered command run by `/bin/sh` with a `plan` payload | `▏`/`plan` reported through the link (#2) |
+| `uninstall`, then a restart | link removed with the hooks; the startup hook did not create it again |
+| A state directory outside `$HOME` | the command is written with the absolute path instead |
 | Against live Claude Code 2.1.285 | `permission_mode` present on `UserPromptSubmit`, `PreToolUse` and `Stop`, absent on `Notification`; a hook added to settings took effect without restarting the session |
 
 ## Third-party

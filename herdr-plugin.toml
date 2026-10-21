@@ -37,6 +37,11 @@ title = "Clear agent mode tokens"
 contexts = ["pane", "workspace"]
 command = ["bin/clear"]
 
+# Moves the link the Claude hooks point at onto this installation after an update (see bin/lib.sh),
+# and creates it on a machine that shares settings.json. Reads settings.json, never writes it.
+[[startup]]
+command = ["bin/hooks", "--relink"]
+
 # What is registered right now, for when the sidebar is blank and the question is which half broke.
 [[actions]]
 id = "status"

@@ -76,26 +76,33 @@ herdr plugin link ./herdr-agent-mode
 herdr plugin action invoke unstable-code.herdr-agent-mode.install
 ```
 
-다른 훅과 설정은 건드리지 않는다. 자기 항목은 명령 문자열이 아니라 마커 주석으로 식별하므로, 플러그인이
-옮겨간 뒤(오늘은 링크한 작업트리, 내일은 설치본) 다시 설치해도 옛 항목이 남지 않는다 — 남으면 Claude 가
-도구 호출마다 없는 명령을 부르게 된다. `uninstall` 이 되돌리고, `status` 가 몇 개 등록돼 있는지 알려
-준다. 돌고 있는 Claude 세션도 재시작 없이 반영된다.
+다른 훅과 설정은 건드리지 않는다. 자기 항목은 명령 문자열이 아니라 마커 주석으로 식별하므로, 다시
+설치하면 예전 항목을 바꿀 뿐 두 벌이 되지 않는다. `uninstall` 이 되돌리고(`herdr plugin uninstall` 은
+이걸 하지 않으니 그 전에 돌린다), `status` 가 링크와 등록된 명령을 보여 준다. 돌고 있는 Claude 세션도 재시작 없이 반영된다.
 
-등록되는 명령은 자기 존재 검사를 달고 간다.
+등록되는 명령은 설치본이 아니라 링크를 가리키고, 자기 존재 검사를 달고 간다.
 
 ```sh
-p='/path/to/herdr-agent-mode/bin/report'; [ -x "$p" ] || exit 0; exec "$p"  # herdr-agent-mode
+p="$HOME"'/.local/state/herdr/plugins/unstable-code.herdr-agent-mode/bin/report'; [ -x "$p" ] || exit 0; exec "$p"  # herdr-agent-mode
 ```
+
+링크는 플러그인의 상태 디렉터리에 있고, herdr 는 이 디렉터리를 플러그인 id 만으로 정한다. 링크는 지금
+쓰는 설치본의 `bin/` 디렉터리를 가리킨다. herdr 0.9.5 부터는 설치와 `herdr plugin update` 가 매번 새
+디렉터리(`…/github-installations/<id>-<해시>/<pid>-<n>/`)에 들어가므로, 설치본을 직접 가리키는 명령은 첫
+업데이트에서 멈춘다 — 아래의 존재 검사 때문에 소리도 없이. 링크는 install 액션이 만들고, `[[startup]]`
+훅이 다음 서버 시작 때 새 설치본으로 옮긴다. 둘 다 `settings.json` 은 건드리지 않으며, install 액션도
+항목이 실제로 바뀔 때만 이 파일을 다시 쓴다.
 
 Claude 는 훅 명령을 `/bin/sh` 로 돌리는데, 이 실패는 스크립트가 조용히 빠지기 **전에** 일어난다. 그래서
 이 기기에 없는 경로가 등록돼 있으면 매 턴마다 `No such file or directory` 가 네 번씩 찍힌다. 드문 일이
 아니다 — `~/.claude/settings.json` 은 보통 여러 기기가 공유하는 dotfiles 트리로의 심링크이고, install
 액션을 돌린 기기는 그중 하나뿐이다.
 
-⚠️ 모든 기기에서 같은 방식으로 설치할 것. `herdr plugin install` 은 플러그인 id 만으로 만든 디렉터리에
-넣는다 — 접미사가 `sha256(id)` 의 앞 6바이트라 커밋도 호스트명도 들어가지 않아, 경로가 어디서나 같고
-업데이트해도 유지된다. `herdr plugin link` 는 작업트리가 있는 자리에 쓰므로, 공유 설정 파일이 기기마다
-어긋나는 원인이 된다.
+링크 경로는 플러그인 id 와 홈 디렉터리로만 정해지므로, 여러 기기가 공유하는 `settings.json` 은 각 기기가
+플러그인을 어떻게 설치했든 모두 같은 경로를 가리킨다. install 액션은 그중 한 기기에서만 돌리면 되고,
+같은 파일을 공유하는 다른 기기는 herdr 서버가 다음에 뜰 때 startup 훅이 링크를 만든다. 링크가 없던 이전
+버전에서 올라왔다면 install 액션을 한 번 더 돌린다 — 설치본을 가리키던 옛 항목을 바꿔 주며, 그 전까지는
+startup 훅이 그렇다는 알림을 띄운다.
 
 마지막으로 토큰을 사이드바에 올린다. 토큰은 둘이고, 행은 하나만 써도 되고 둘 다 써도 된다.
 
@@ -173,6 +180,13 @@ auto `#FFC107`(Claude 의 `warning` 토큰). manual 은 거기서 고유한 색 
 | 등록된 명령을 `/bin/sh` 로 실행, 스크립트는 없는 상태 | 종료 코드 0, 아무 출력 없음 — 이슈 #1 이 보고한 경우 |
 | 같은 조건에 플러그인 경로에 작은따옴표가 든 경우 | 쿼팅이 맞고 실행되며, `uninstall` 이 마커로 그대로 찾아낸다 |
 | `uninstall` | 이 플러그인 항목만 사라짐 |
+| 설치본을 직접 가리키던 항목 위에 install (herdr 0.9.5) | 옛 항목이 `p="$HOME"'/…/bin/report'` 로 바뀌고 `bin` 링크가 설치본을 가리킴. 다른 훅·설정은 그대로 |
+| 바뀐 게 없는 상태에서 install 재실행 | `settings.json` 을 다시 쓰지 않음(mtime 동일) |
+| 링크가 없는 기기에서 "업데이트": 다른 디렉터리에서 다시 등록하고 링크를 지운 뒤 서버 재시작 | `[[startup]]` 훅이 `settings.json` 의 항목을 보고 새 `bin/` 으로 링크를 만듦. `settings.json` 은 바이트 단위로 그대로 |
+| 링크 이전의 옛 항목이 있는 채로 서버 시작 | 링크를 만들고 install 액션을 돌리라는 알림 한 번. 항목이 최신이면 알림 없음 |
+| 처음 설치본을 지운 뒤 등록된 명령을 `/bin/sh` 로 `plan` 페이로드와 실행 | 링크를 거쳐 `▏`/`plan` 보고 (#2) |
+| `uninstall` 후 재시작 | 훅과 함께 링크 제거, startup 훅이 다시 만들지 않음 |
+| 상태 디렉터리가 `$HOME` 밖 | 명령에 절대경로로 기록 |
 | 실제 Claude Code 2.1.285 에 대고 | `permission_mode` 가 `UserPromptSubmit`·`PreToolUse`·`Stop` 에 있고 `Notification` 에는 없음. 설정에 넣은 훅이 세션 재시작 없이 적용됨 |
 
 ## 제3자 저작물

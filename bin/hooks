@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Register or remove this plugin's Claude Code hooks in ~/.claude/settings.json.
 #
-# Usage: hooks --install | --remove | --status
+# Usage: hooks --install | --remove | --status | --relink
 #
 # The hooks are what make the plugin work, and they live in a file Claude Code and other tools also
 # write. So this only ever touches its own entries and leaves every other hook and setting alone.
@@ -10,57 +10,84 @@ set -u
 # shellcheck source=bin/lib.sh
 . "${0%/*}/lib.sh"
 
-report_bin="${0%/*}/report"
-case "$report_bin" in /*) ;; *) report_bin="$PWD/$report_bin" ;; esac
+bin_dir=${0%/*}
+case "$bin_dir" in /*) ;; *) bin_dir="$PWD/$bin_dir" ;; esac
+
+# Point the stable link at this installation (see lib.sh for why the hooks name a link).
+link_bin() { mkdir -p "$state_dir" && ln -sfn "$bin_dir" "$bin_link"; }
 
 # Claude runs a hook command through /bin/sh, so a registered path that does not exist on this
 # machine fails *before* bin/report can decline quietly: Claude shows `No such file or directory`
 # on every turn, four times over. That is not hypothetical — ~/.claude/settings.json is commonly a
-# symlink into a dotfiles tree shared by several machines, and a path written by a `herdr plugin
-# link` install on one of them does not exist on the others (issue #1). So the command carries its
-# own existence check and exits 0 when the script is gone.
+# symlink into a dotfiles tree shared by several machines (issue #1), and on one of them the link may
+# not exist yet. So the command carries its own existence check and exits 0 when the script is gone.
 #
 # `exec` keeps the hook payload on stdin and spends no extra process.
 sh_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
-# shellcheck disable=SC2016  # the $p in the printf format is for /bin/sh to expand, not this shell.
+# The link is written relative to $HOME when it sits under it, which is the default: /bin/sh expands
+# it when the hook runs, so a settings.json shared between machines reads the same on every one of
+# them — /home/<user> on one, /Users/<user> on another. A state directory outside $HOME is written
+# as an absolute path, and then only machines with that same path can share the file.
+# shellcheck disable=SC2016  # $HOME and $p are for /bin/sh to expand, not this shell.
 hook_command() {
-    printf 'p=%s; [ -x "$p" ] || exit 0; exec "$p"  # %s\n' "$(sh_quote "$report_bin")" "$marker"
+    local report="$bin_link/report" word
+    case "$report" in
+        "$HOME"/*) word="\"\$HOME\"$(sh_quote "${report#"$HOME"}")" ;;
+        *) word=$(sh_quote "$report") ;;
+    esac
+    printf 'p=%s; [ -x "$p" ] || exit 0; exec "$p"  # %s\n' "$word" "$marker"
 }
 
-# Ownership is decided by this marker, not by the command string or the path inside it. A plugin
-# that moves — linked from a working tree today, installed under ~/.config/herdr/plugins tomorrow —
-# writes a different path, and matching on equality would leave the old entry behind for Claude to
-# run before every tool call, forever. A path fragment would survive the move but not the quoting:
-# a directory with an apostrophe in it splits the fragment apart. herdr's own Claude integration
-# marks its hook the same way, with `# HERDR_INTEGRATION_ID=claude`.
+# Ownership is decided by this marker, not by the command string or the path inside it: entries
+# written before the link named an installation directly, and those have to be found and replaced
+# whatever path they hold. A path fragment would not do either — a directory with an apostrophe in
+# it splits the fragment apart once quoted. herdr's own Claude integration marks its hook the same
+# way, with `# HERDR_INTEGRATION_ID=claude`. Entries written before the marker existed are plain
+# absolute paths that contain the plugin directory name, so this same marker sweeps them too.
 marker='herdr-agent-mode'
-# Entries written before the marker existed are plain absolute paths — they contain the plugin
-# directory name, so this same marker sweeps them too.
 
 # Events that carry permission_mode, plus SessionEnd, which means the agent is gone.
 events="UserPromptSubmit PreToolUse Stop SessionEnd"
 
-command -v jq >/dev/null 2>&1 || {
-    notify "Agent mode" "jq is required"
-    echo "jq is required" >&2
+# Our entries in settings.json: all of them, or (with an argument) only those whose command differs
+# from it — an entry from before the link, naming an installation that the next update removes.
+owned_count() {
+    jq --arg marker "$marker" --arg cmd "${1:-}" '
+        [(.hooks // {}) | to_entries[] | .value[]? | (.hooks // [])[]?
+         | select((.command // "") | contains($marker))
+         | select($cmd == "" or .command != $cmd)] | length' "$settings_file" 2>/dev/null
+}
+
+# The startup hook. An update installs into a new directory, and the next server start runs this from
+# there. The link is (re)made wherever settings.json carries our entries — which is also how a second
+# machine sharing that file gets its link without running the install action. settings.json is only
+# read here: writing it stays an asked-for step, so entries from before the link are reported, not
+# rewritten.
+if [ "${1:-}" = "--relink" ]; then
+    command -v jq >/dev/null 2>&1 && [ -e "$settings_file" ] || exit 0
+    [ "$(owned_count)" -gt 0 ] 2>/dev/null || exit 0
+    [ "$bin_link" -ef "$bin_dir" ] || link_bin
+    if [ "$(owned_count "$(hook_command)")" -gt 0 ] 2>/dev/null; then
+        notify "Agent mode" "Claude hooks name an old path; run the install action once"
+    fi
+    exit 0
+fi
+
+die() {
+    notify "Agent mode" "$1"
+    echo "$1" >&2
     exit 1
 }
 
+command -v jq >/dev/null 2>&1 || die "jq is required"
 [ -e "$settings_file" ] || {
-    notify "Agent mode" "no Claude settings file at $settings_file"
-    echo "no Claude settings file at $settings_file" >&2
     echo "start Claude Code once, or set CLAUDE_CONFIG_DIR" >&2
-    exit 1
+    die "no Claude settings file at $settings_file"
 }
-
-jq -e . "$settings_file" >/dev/null 2>&1 || {
-    notify "Agent mode" "$settings_file is not valid JSON"
-    echo "$settings_file is not valid JSON — refusing to touch it" >&2
-    exit 1
-}
+jq -e . "$settings_file" >/dev/null 2>&1 || die "$settings_file is not valid JSON — refusing to touch it"
 
 # Drop every entry of ours, wherever it sits. Both --install and --remove start here: installing
-# runs the same sweep and then adds the current path back, so a stale entry cannot survive either
+# runs the same sweep and then adds the link command back, so a stale entry cannot survive either
 # operation and neither can a duplicate.
 # shellcheck disable=SC2016  # jq program: $marker and $events are jq variables, not shell ones.
 prune='.hooks //= {}
@@ -76,37 +103,27 @@ add='| reduce ($events | split(" "))[] as $event (.;
 
 # Write back through the path, never over it. That file is commonly a symlink into a dotfiles
 # working tree, and `mv`-ing a temporary file onto it would replace the link with a regular file.
+# Installing again is the normal case now that the command names a stable link, and a file that lives
+# in a dotfiles tree should not be rewritten — reformatted by jq — when nothing changed.
 apply() {
-    local program=$1 updated
+    local updated
     updated=$(jq --arg cmd "$(hook_command)" --arg marker "$marker" --arg events "$events" \
-        "$program" "$settings_file") || return 1
-    printf '%s\n' "$updated" >"$settings_file" || return 1
-    return 0
-}
-
-owned_count() {
-    jq --arg marker "$marker" '
-        [(.hooks // {}) | to_entries[] | .value[]? | (.hooks // [])[]?
-         | select((.command // "") | contains($marker))] | length' "$settings_file" 2>/dev/null
+        "$1" "$settings_file") || return 1
+    [ "$updated" = "$(jq . "$settings_file")" ] && return 0
+    printf '%s\n' "$updated" >"$settings_file"
 }
 
 case "${1:---status}" in
     --install)
-        apply "$prune $add" || {
-            notify "Agent mode" "could not write $settings_file"
-            echo "could not write $settings_file" >&2
-            exit 1
-        }
+        link_bin || die "could not link $bin_link -> $bin_dir"
+        apply "$prune $add" || die "could not write $settings_file"
         notify "Agent mode hooks installed" "$(owned_count) hook(s): $events"
         echo "installed $(owned_count) hook(s) for $events"
         echo "running Claude sessions pick this up without restarting"
         ;;
     --remove)
-        apply "$prune" || {
-            notify "Agent mode" "could not write $settings_file"
-            echo "could not write $settings_file" >&2
-            exit 1
-        }
+        apply "$prune" || die "could not write $settings_file"
+        rm -f "$bin_link"
         notify "Agent mode hooks removed" "run the clear action to drop the tokens already on panes"
         echo "removed this plugin's hooks from $settings_file"
         echo "run the clear action to drop the tokens already on your panes"
@@ -115,11 +132,12 @@ case "${1:---status}" in
         count=$(owned_count)
         notify "Agent mode hooks" "${count:-0} installed"
         echo "settings: $settings_file"
-        echo "command:  $report_bin"
+        echo "link:     $bin_link -> $(readlink "$bin_link" 2>/dev/null || echo "(none)")"
+        echo "command:  $(hook_command)"
         echo "hooks installed: ${count:-0}"
         ;;
     *)
-        echo "usage: hooks --install | --remove | --status" >&2
+        echo "usage: hooks --install | --remove | --status | --relink" >&2
         exit 2
         ;;
 esac
