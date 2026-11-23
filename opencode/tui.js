@@ -1,4 +1,5 @@
-// herdr-agent-mode: opencode's agent (Build, Plan, ...) as the $mode / $mode_label pane tokens.
+// herdr-agent-mode: opencode's agent (Build, Plan, ...) as the $mode / $mode_label pane tokens, and
+// its model as $model.
 //
 // This is an opencode 2.x TUI plugin. The install action registers this directory in opencode's
 // cli.json "plugins" list — through a link in the herdr plugin's state directory, so an update that
@@ -11,11 +12,13 @@
 // The agent comes from the selected session (api.data.session.get(id).agent). opencode records the
 // agent when a message is sent, not when shift+tab cycles it, and the TUI plugin API does not expose
 // the prompt's own selection — so, as with Claude, the sidebar shows what the last message ran
-// under. With no session open (the home screen) there is no agent to report and the tokens are
-// cleared.
+// under. The model comes from the same session (.model.id) and follows the same rule; the prompt's
+// own model selection is readable, but showing it beside an agent that lags would describe a pairing
+// no message ran under. With no session open (the home screen) there is nothing to report and the
+// tokens are cleared.
 //
 // Reporting goes through bin/publish, the same lib.sh code the Claude hook uses, so the glyph table,
-// the token names and the sequence rule exist once. It runs only when the agent changes. Every
+// the token names and the sequence rule exist once. It runs only when the agent or model changes. Every
 // failure is silent: outside herdr, a missing script, an API this opencode does not have.
 
 import { spawn } from "node:child_process";
@@ -35,12 +38,13 @@ try {
   publishPath = join(dirname(realpathSync(fileURLToPath(import.meta.url))), "..", "bin", "publish");
 } catch {}
 
-// publish(agent) resolves when the report has been made. bin/publish takes its sequence number when
-// it runs, so reports go one at a time: two in flight could land in the wrong order.
-function publish(agent, options = {}) {
+// publish(agent, model) resolves when the report has been made; an empty field clears its tokens.
+// bin/publish takes its sequence number when it runs, so reports go one at a time: two in flight
+// could land in the wrong order.
+function publish(agent, model, options = {}) {
   return new Promise((resolve) => {
     if (!publishPath) return resolve();
-    const child = spawn(publishPath, agent ? [agent] : [], { stdio: "ignore", ...options });
+    const child = spawn(publishPath, [agent, model], { stdio: "ignore", ...options });
     child.on("error", resolve);
     child.on("exit", resolve);
     if (options.detached) {
@@ -53,20 +57,28 @@ function publish(agent, options = {}) {
 function setup(api) {
   if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_PANE_ID) return;
 
-  let last;
+  // What was last published. Empty is what a fresh pane shows, so the home screen publishes nothing.
+  let lastAgent = "";
+  let lastModel = "";
   let chain = Promise.resolve();
 
   function sync() {
-    let agent;
+    let agent = "";
+    let model = "";
     try {
       const route = api.ui.router.current();
-      if (route.type === "session") agent = api.data.session.get(route.sessionID)?.agent;
+      if (route.type === "session") {
+        const session = api.data.session.get(route.sessionID);
+        agent = session?.agent ?? "";
+        model = session?.model?.id ?? "";
+      }
     } catch {
       return;
     }
-    if (agent === last) return;
-    last = agent;
-    chain = chain.then(() => publish(agent));
+    if (agent === lastAgent && model === lastModel) return;
+    lastAgent = agent;
+    lastModel = model;
+    chain = chain.then(() => publish(agent, model));
   }
 
   // Fires as the message that records a new agent is sent; the poll would catch it a moment later.
@@ -79,7 +91,7 @@ function setup(api) {
     off();
     // The pane outlives opencode; a mode left behind would describe an agent that is gone. Detached,
     // because opencode may exit before the report finishes.
-    if (last !== undefined) publish(undefined, { detached: true });
+    if (lastAgent || lastModel) publish("", "", { detached: true });
   };
 }
 

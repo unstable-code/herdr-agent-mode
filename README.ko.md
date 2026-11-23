@@ -3,8 +3,8 @@
 [English](README.md) | **한국어**
 
 [Claude Code](https://claude.com/claude-code) 페인이 지금 어떤 권한 모드로, [opencode](https://opencode.ai)
-페인이 어떤 에이전트(Build·Plan …)로 돌고 있는지를 에이전트 사이드바에 표시하는 [herdr](https://herdr.dev)
-플러그인.
+페인이 어떤 에이전트(Build·Plan …)로 돌고 있는지, 그리고 각각 어떤 모델로 돌고 있는지를 에이전트
+사이드바에 표시하는 [herdr](https://herdr.dev) 플러그인.
 
 ## 왜
 
@@ -24,17 +24,26 @@ herdr 는 에이전트가 *무엇을 하고 있는지*(작업 중·대기·차�
 - **훅이 자기 페인을 직접 보고한다.** 훅은 페인 안에서 돌고, 그 환경에는 herdr 가 이미 넣어 둔
   `HERDR_PANE_ID`·`HERDR_SOCKET_PATH`·`HERDR_BIN_PATH` 가 있다. 그래서 `herdr pane report-metadata` 를
   바로 부른다. 즉 이 플러그인에는 herdr 이벤트 훅도, 데몬도 필요 없다 — Claude 훅이 곧 이벤트다.
-- **훅은 넷을 등록하고**, 그중 셋이 모드를 실어 온다.
+- **훅은 다섯을 등록하고**, 그중 셋이 모드를, 하나가 모델을 실어 온다.
 
   | 훅 | 언제 | 무엇을 보고하나 |
   |---|---|---|
+  | `SessionStart` | Claude 시작·`/clear`·`/resume` | 세션이 시작하는 모델 |
   | `UserPromptSubmit` | 프롬프트를 보낼 때 | 그 프롬프트를 보내는 모드 |
   | `PreToolUse` | 도구 호출 직전마다 | 턴이 도는 동안의 모드 |
-  | `Stop` | 턴이 끝날 때 | 페인이 남는 모드 |
-  | `SessionEnd` | Claude 종료·`/clear`·`/resume` | 두 토큰을 지운다 — 에이전트가 사라졌으므로 |
+  | `Stop` | 턴이 끝날 때 | 페인이 남는 모드, 그리고 응답을 쓴 모델 |
+  | `SessionEnd` | Claude 종료·`/clear`·`/resume` | 모든 토큰을 지운다 — 에이전트가 사라졌으므로 |
 
-- **모드를 안 싣는 이벤트는 토큰을 건드리지 않는다.** Claude 는 시간이 지나며 필드를 더한다. 그 필드가 없는
-  미래의 이벤트가 아직 맞는 값을 지워 버려서는 안 된다.
+- **`SessionStart` 이후의 모델은 transcript 에서 읽는다.** 다른 훅은 모델을 싣지 않지만, transcript 의
+  assistant 기록마다 그 기록을 쓴 모델이 남는다. Claude 는 턴의 응답을 `Stop` 훅이 끝난 **뒤에** 거기
+  쓰므로, 훅은 모드를 먼저 보고하고 응답이 기록되면 그 모델을 백그라운드에서 읽어 보고한다(1초도 안
+  걸리고, 3초가 지나면 포기한다). 파일 전체가 아니라 끝부분만 읽는다 — 긴 세션의 transcript 는 수십 MB 다.
+- **모델은 형식을 아는 경우에만 줄인다**: `claude-opus-5-5` → `opus 5.5`,
+  `claude-haiku-4-5-20251001` → `haiku 4.5`. 그 밖의 id(opencode 의 로컬 모델, 다른 제공자의 모델)는
+  추측으로 줄이지 않고 그대로 내보낸다.
+- **이벤트가 싣지 않는 필드는 건드리지 않는다.** `SessionStart` 에는 모드가, 대부분의 훅에는 모델이 없는데,
+  어느 쪽도 다른 쪽을 지워서는 안 된다. Claude 는 시간이 지나며 필드를 더하기도 한다. 그 필드가 없는 미래의
+  이벤트가 아직 맞는 값을 지워 버려서는 안 된다.
 - **모든 실패는 조용하다.** herdr 가 없든, `jq` 가 없든, herdr 밖의 페인이든, 페이로드가 깨졌든 훅은 0으로
   끝나고 아무것도 보고하지 않는다. stderr 에 뭔가 쓰는 훅은 사용자가 신경 써야 하는 훅이고, 여기서 하는
   일 중 세션을 방해할 만큼 중요한 것은 없다 — 최악이라야 사이드바에 직전 모드가 남을 뿐이다.
@@ -55,7 +64,10 @@ opencode 에는 권한 모드 대신 **에이전트**가 있다(기본은 Build 
   플러그인에서 보고한다.
 - **값은 선택된 세션의 에이전트다**(`api.data.session.get(id).agent`). 바뀌면 `bin/publish` 를 실행해
   Claude 훅과 같은 `lib.sh` 코드로 보고한다 — 글리프 표·토큰 이름·seq 규칙이 두 에이전트에 한 벌뿐이다.
-- **opencode 를 끝내면 두 토큰을 지운다.** 세션이 없는 홈 화면에서도 지운다 — 보고할 에이전트가 없다.
+- **모델도 같은 세션의 것이다**(`.model.id`), `$model` 로 보인다. TUI 는 프롬프트에서 지금 고른 모델도
+  읽을 수 있지만, 에이전트가 늦게 따라가므로(아래) 모델만 바로 따라가면 어느 메시지도 돈 적 없는 조합을
+  보이게 된다.
+- **opencode 를 끝내면 모든 토큰을 지운다.** 세션이 없는 홈 화면에서도 지운다 — 보고할 것이 없다.
 
 ## 못 하는 것
 
@@ -72,6 +84,10 @@ Claude Code 에는 모드 변경으로 발생하는 훅 이벤트가 없고, 세
 **opencode 도 같은 지연이 있다.** opencode 는 에이전트를 메시지를 보낼 때 세션에 기록한다. `shift+tab`
 만 누르면 프롬프트의 표시만 바뀌고, 그 선택을 읽는 API 는 TUI 플러그인에 없다(모델과 variant 는 있다).
 그래서 바꾼 에이전트는 다음 메시지를 보낼 때 사이드바에 나타난다.
+
+**모델은 한 턴만큼 늦다.** Claude 의 `/model` 은 새 모델로 도는 첫 턴이 끝난 뒤에, opencode 의 모델 변경은
+그 모델로 메시지를 보낸 뒤에 나타난다. 두 에이전트 모두 모델을 자기가 쓴 기록에 남기고, 바꾸는 순간 자체에
+대한 이벤트는 없다.
 
 ## 요구사항
 
@@ -126,22 +142,23 @@ p="$HOME"'/.local/state/herdr/plugins/unstable-code.herdr-agent-mode/bin/report'
 항목이 실제로 바뀔 때만 이 파일을 다시 쓴다.
 
 Claude 는 훅 명령을 `/bin/sh` 로 돌리는데, 이 실패는 스크립트가 조용히 빠지기 **전에** 일어난다. 그래서
-이 기기에 없는 경로가 등록돼 있으면 매 턴마다 `No such file or directory` 가 네 번씩 찍힌다. 드문 일이
+이 기기에 없는 경로가 등록돼 있으면 매 턴마다 `No such file or directory` 가 훅 수만큼 찍힌다. 드문 일이
 아니다 — `~/.claude/settings.json` 은 보통 여러 기기가 공유하는 dotfiles 트리로의 심링크이고, install
 액션을 돌린 기기는 그중 하나뿐이다.
 
 링크 경로는 플러그인 id 와 홈 디렉터리로만 정해지므로, 여러 기기가 공유하는 `settings.json` 은 각 기기가
 플러그인을 어떻게 설치했든 모두 같은 경로를 가리킨다. install 액션은 그중 한 기기에서만 돌리면 되고,
 같은 파일을 공유하는 다른 기기는 herdr 서버가 다음에 뜰 때 startup 훅이 링크를 만든다. 링크가 없던 이전
-버전에서 올라왔다면 install 액션을 한 번 더 돌린다 — 설치본을 가리키던 옛 항목을 바꿔 주며, 그 전까지는
-startup 훅이 그렇다는 알림을 띄운다.
+버전, 또는 훅을 더 적게 등록하던 버전(`SessionStart` 는 모델과 함께 들어왔다)에서 올라왔다면 install 액션을
+한 번 더 돌린다 — 옛 항목을 바꿔 주며, 그 전까지는 startup 훅이 그렇다는 알림을 띄운다.
 
-마지막으로 토큰을 사이드바에 올린다. 토큰은 둘이고, 행은 하나만 써도 되고 둘 다 써도 된다.
+마지막으로 토큰을 사이드바에 올린다. 토큰은 셋이고, 행은 그중 어느 것을 써도 된다.
 
 | 토큰 | 값 | 쓰임 |
 |---|---|---|
 | `$mode` | 글리프 한 칸: `▏▎▍▌▋█` | 폭이 없는 행 |
 | `$mode_label` | 단어: `plan`·`deny`·`manual`·`edits`·`auto`·`bypass` | 폭이 되는 행 |
+| `$model` | 모델: `opus 5.5`·`qwen3.6-35b-a3b` | 이름이 들어갈 폭이 있는 행 |
 
 ```toml
 [ui.sidebar.agents]
@@ -152,7 +169,7 @@ rows = [
     { equals = "▋", fg = "#FFC107" },
     { equals = "█", fg = "#FF5555", bold = true },
     { equals = "▎", fg = "#FF5555" },
-  ] }, "workspace", "tab", "agent"],
+  ] }, "workspace", "tab", "agent", "$model"],
   ["terminal_title_stripped"],
 ]
 ```
@@ -180,7 +197,7 @@ auto `#FFC107`(Claude 의 `warning` 토큰). manual 은 거기서 고유한 색 
 | `install` | `~/.claude/settings.json` 에 Claude 훅을, opencode `cli.json` 에 TUI 플러그인을 등록 |
 | `uninstall` | 다시 제거 |
 | `status` | Claude 훅이 몇 개 등록돼 있는지, opencode 에 등록돼 있는지, 각각 어디에 있는지 |
-| `clear` | 토큰이 붙은 모든 페인에서 두 토큰을 제거 |
+| `clear` | 토큰이 붙은 모든 페인에서 이 플러그인의 토큰을 제거 |
 
 각 액션은 herdr 알림으로 요약을 보고하고, 자세한 내용은 `herdr plugin log` 로 간다.
 
@@ -226,6 +243,12 @@ auto `#FFC107`(Claude 의 `warning` 토큰). manual 은 거기서 고유한 색 
 | opencode 만 있는 기기 / 둘 다 없는 기기 | Claude 는 건너뛰고 opencode 만 등록 / 종료 코드 1 |
 | opencode 링크를 지우고 startup 훅 명령(`hooks --relink`) 실행 | `cli.json` 의 항목을 보고 링크를 다시 만듦 |
 | 실제 opencode 2.2.6 TUI 에 대고 | 홈 화면에서는 토큰 없음. Build 로 메시지 → `▍`/`build`, `shift+tab` 만 → 그대로, Plan 으로 메시지 → `▏`/`plan`, opencode 종료 → 두 토큰 삭제. 절대 경로로 등록한 플러그인 디렉터리가 로드됨 |
+| 모델 id 줄이기 | `claude-opus-5-5` → `opus 5.5`, `claude-opus-5` → `opus 5`, `claude-haiku-4-5-20251001` → `haiku 4.5`, `claude-opus-5-5[1m]` → `opus 5.5[1m]`. `qwen3.6-35b-a3b`·`gpt-5.1`·`claude-3-5-sonnet-20241022` 는 그대로 |
+| `SessionStart`(모델만), 이어서 `PreToolUse`(모드만) | 앞은 `$model` 만, 뒤는 모드만 보고하고 서로를 지우지 않음 |
+| 이전 버전의 훅 넷 위에 install, 그 전의 서버 시작 | `SessionStart` 항목이 더해짐. 그 전까지 startup 훅이 install 액션을 돌리라고 알림 |
+| 실제 Claude Code 2.1.330 에 대고 | `SessionStart` 에 `model` 이 있고 `permission_mode` 는 없음. `Stop` 에는 모델이 없고 transcript 에도 그 턴의 응답이 아직 없음 — 응답은 훅 시작 약 0.1초 뒤에 기록됨. 새 세션에 `SessionStart` 로 `haiku 4.5`, `/model sonnet` 뒤 첫 턴이 끝나자 `sonnet 5.5`, `/exit` 로 세 토큰 모두 삭제 |
+| 실제 opencode 2.2.6 TUI 에 대고 | 메시지 → `▍`/`build` 와 `qwen3.6-35b-a3b`, 종료 → 세 토큰 삭제. 다른 모델로의 전환은 실측하지 않음 — 설정된 다른 모델이 유료 모델뿐이었다 |
+| `clear` 액션 | 모드 토큰과 함께 `$model` 도 삭제. `$model` 만 붙은 페인도 대상 |
 
 ## 제3자 저작물
 

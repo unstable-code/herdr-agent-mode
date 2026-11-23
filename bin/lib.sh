@@ -5,6 +5,7 @@ herdr=${HERDR_BIN_PATH:-herdr}
 source_id=unstable-code.herdr-agent-mode
 glyph_token=mode
 label_token=mode_label
+model_token=model
 # shellcheck disable=SC2034  # bin/hooks uses it; this file is sourced, not run.
 settings_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
 
@@ -78,6 +79,18 @@ mode_label() {
     esac
 }
 
+# The model as a short name: `claude-<family>-<major>[-<minor>][-<date>][<suffix>]` becomes
+# `<family> <major>[.<minor>][<suffix>]`. Any other id is published as it is — one shortened by a
+# guess could name the wrong model.
+model_label() {
+    if [[ $1 =~ ^claude-([a-z]+)-([0-9]+)(-([0-9]{1,2}))?(-[0-9]{8})?(\[[^]]*\])?$ ]]; then
+        printf '%s %s%s%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" \
+            "${BASH_REMATCH[4]:+.${BASH_REMATCH[4]}}" "${BASH_REMATCH[6]}"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
 # True when this process is running inside a herdr pane that can be reported on. Every caller fails
 # closed on this: a Claude session started outside herdr must not make the hook noisy or slow.
 in_herdr_pane() {
@@ -88,21 +101,35 @@ in_herdr_pane() {
     return 0
 }
 
-# publish <pane> [mode]: report both shapes of the mode, or clear both when no mode is given.
-# One call and one sequence number for the pair — they are the same fact, and a row showing the bar
+# publish <pane> [mode=<mode>] [model=<model>]: report the given fields in one call. A field left out
+# is left as it is, and one given empty is cleared.
+#
+# One call rather than one per field, because herdr keeps a single sequence number per source and
+# drops a report older than it whole — a model sent on its own could be lost to a mode report that
+# overtook it. The two shapes of the mode share the call for a plainer reason: a row showing the bar
 # of one mode beside the word of another would be worse than showing nothing.
 publish() {
-    local pane=$1 mode=${2:-} seq
-    seq=$(now_ms)
-    if [ -n "$mode" ]; then
-        "$herdr" pane report-metadata "$pane" --source "$source_id" --seq "$seq" \
-            --token "$glyph_token=$(mode_glyph "$mode")" \
-            --token "$label_token=$(mode_label "$mode")" >/dev/null 2>&1
-    else
-        "$herdr" pane report-metadata "$pane" --source "$source_id" --seq "$seq" \
-            --clear-token "$glyph_token" --clear-token "$label_token" >/dev/null 2>&1
-    fi
+    local pane=$1 field value args=()
+    shift
+    for field; do
+        value=${field#*=}
+        case "$field" in
+            mode=?*) args+=(--token "$glyph_token=$(mode_glyph "$value")"
+                --token "$label_token=$(mode_label "$value")") ;;
+            mode=) args+=(--clear-token "$glyph_token" --clear-token "$label_token") ;;
+            model=?*) args+=(--token "$model_token=$(model_label "$value")") ;;
+            model=) args+=(--clear-token "$model_token") ;;
+        esac
+    done
+    [ ${#args[@]} -gt 0 ] || return 0
+    "$herdr" pane report-metadata "$pane" --source "$source_id" --seq "$(now_ms)" "${args[@]}" >/dev/null 2>&1
 }
+
+# Every token publish can set, and the call that clears them all. A field added to publish goes in
+# both, and bin/clear and SessionEnd follow.
+# shellcheck disable=SC2034  # bin/clear uses it.
+all_tokens=("$glyph_token" "$label_token" "$model_token")
+clear_pane() { publish "$1" mode= model=; }
 
 # Actions report back as a herdr notification, the way the sibling plugins do: an action invoked
 # from a key or the UI is otherwise silent, and its failures would only ever reach `herdr plugin

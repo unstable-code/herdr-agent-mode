@@ -57,16 +57,28 @@ hook_command() {
 # absolute paths that contain the plugin directory name, so this same marker sweeps them too.
 marker='herdr-agent-mode'
 
-# Events that carry permission_mode, plus SessionEnd, which means the agent is gone.
-events="UserPromptSubmit PreToolUse Stop SessionEnd"
+# The events that carry permission_mode, SessionStart for the model (#4), and SessionEnd, which means
+# the agent is gone. bin/report says which carries what.
+events=(SessionStart UserPromptSubmit PreToolUse Stop SessionEnd)
 
-# Our entries in settings.json: all of them, or (with an argument) only those whose command differs
-# from it — an entry from before the link, naming an installation that the next update removes.
+# How many entries of ours settings.json holds.
 owned_count() {
-    jq --arg marker "$marker" --arg cmd "${1:-}" '
+    jq --arg marker "$marker" '
         [(.hooks // {}) | to_entries[] | .value[]? | (.hooks // [])[]?
-         | select((.command // "") | contains($marker))
-         | select($cmd == "" or .command != $cmd)] | length' "$settings_file" 2>/dev/null
+         | select((.command // "") | contains($marker))] | length' "$settings_file" 2>/dev/null
+}
+
+# True when our entries are not what --install would write: one names another command (from before
+# the link, an installation the next update removes), or an event has no entry with the current one
+# (installed by a version that registered fewer events).
+# shellcheck disable=SC2016  # jq program: $h, $marker, $cmd are jq variables.
+hooks_outdated() {
+    jq -e --arg marker "$marker" --arg cmd "$(hook_command)" '
+        (.hooks // {}) as $h
+        | def ours: [.[]? | (.hooks // [])[]? | .command // "" | select(contains($marker))];
+          ([$h[] | ours[]] | any(. != $cmd))
+          or ($ARGS.positional | any(. as $e | $h[$e] | ours | index($cmd) == null))' \
+        --args "${events[@]}" <"$settings_file" >/dev/null 2>&1
 }
 
 # ── opencode ──────────────────────────────────────────────────────────────────
@@ -116,9 +128,7 @@ if [ "${1:-}" = "--relink" ]; then
     command -v jq >/dev/null 2>&1 || exit 0
     if [ -e "$settings_file" ] && [ "$(owned_count)" -gt 0 ] 2>/dev/null; then
         [ "$bin_link" -ef "$bin_dir" ] || link_to "$bin_dir" "$bin_link"
-        if [ "$(owned_count "$(hook_command)")" -gt 0 ] 2>/dev/null; then
-            notify "Agent mode" "Claude hooks name an old path; run the install action once"
-        fi
+        hooks_outdated && notify "Agent mode" "Claude hooks are out of date; run the install action once"
     fi
     if oc_registered; then
         [ "$opencode_link" -ef "$oc_dir" ] || link_to "$oc_dir" "$opencode_link"
@@ -161,7 +171,7 @@ add='| reduce ($events | split(" "))[] as $event (.;
 
 apply() {
     local updated
-    updated=$(jq --arg cmd "$(hook_command)" --arg marker "$marker" --arg events "$events" \
+    updated=$(jq --arg cmd "$(hook_command)" --arg marker "$marker" --arg events "${events[*]}" \
         "$1" "$settings_file") || return 1
     write_if_changed "$settings_file" "$updated"
 }
@@ -175,7 +185,7 @@ case "${1:---status}" in
             link_to "$bin_dir" "$bin_link" || die "could not link $bin_link -> $bin_dir"
             apply "$prune $add" || die "could not write $settings_file"
             claude_msg="$(owned_count) Claude hook(s)"
-            echo "installed $claude_msg for $events; running sessions pick this up"
+            echo "installed $claude_msg for ${events[*]}; running sessions pick this up"
         else
             echo "no Claude settings at $settings_file — skipped (start Claude Code once, or set CLAUDE_CONFIG_DIR)"
         fi

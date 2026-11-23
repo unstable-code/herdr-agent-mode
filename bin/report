@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
-# Claude Code hook entry point: read the hook payload on stdin and report the pane's permission mode.
+# Claude Code hook entry point: read the hook payload on stdin and report the pane's permission mode
+# and model.
 #
 # Registered for UserPromptSubmit, PreToolUse and Stop, which are the events that carry
-# `permission_mode`, plus SessionEnd, which carries none and means "clear the tokens".
+# `permission_mode`; SessionStart, which carries the model instead (as of 2.1.330 the only event
+# that does); and SessionEnd, which carries neither and means "clear the tokens".
+#
+# After SessionStart the model comes from the transcript, where every assistant message records the
+# model that wrote it: Stop reads it there. That is how a `/model` switch reaches the sidebar — when
+# the first turn under the new model ends.
 #
 # This runs before every single tool call, so the work per run is kept to two processes: one jq to
-# read the payload and one herdr to report it. Everything else is a bash builtin.
+# read the payload and one herdr to report it. Everything else is a bash builtin. Reading the
+# transcript costs a few more, once a turn and in the background, never per tool call.
 #
 # Everything here fails closed and silently. A hook that writes to stderr or exits non-zero is a
 # hook the user has to think about, and nothing this plugin does is worth interrupting a session
@@ -18,25 +25,50 @@ set -u
 in_herdr_pane || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 
-# One jq pass over stdin for both fields. Reading the payload into a variable first and then
-# running jq twice would cost an extra process and two temporary files (bash writes a here-string
-# to disk); letting jq read stdin directly also drains it, so Claude Code never sees a broken pipe.
-IFS=$'\t' read -r event mode < <(
-    jq -r '[(.hook_event_name // ""), (.permission_mode // "")] | @tsv' 2>/dev/null
+# One jq pass over stdin for every field. Reading the payload into a variable first and then running
+# jq once per field would cost extra processes and temporary files (bash writes a here-string to
+# disk); letting jq read stdin directly also drains it, so Claude Code never sees a broken pipe.
+# The fields are joined with the unit separator, not a tab: a tab is IFS whitespace, so `read` would
+# fold the two around an empty field into one and hand the next field to the wrong name.
+IFS=$'\x1f' read -r event mode model transcript prompt_id < <(
+    jq -r '[.hook_event_name, .permission_mode, .model, .transcript_path, .prompt_id] | map(. // "") | join("\u001f")' \
+        2>/dev/null
 ) || exit 0
 
 # SessionEnd is the only reason this plugin ever clears a pane by itself: Claude is gone, so the
-# mode it was running under is no longer true of that pane.
+# mode and model it was running under are no longer true of that pane.
 if [ "$event" = "SessionEnd" ]; then
-    publish "$HERDR_PANE_ID"
+    clear_pane "$HERDR_PANE_ID"
     exit 0
 fi
 
-# An event that carries no mode says nothing about the pane, so leave what is there alone rather
-# than clearing it. Claude adds fields over time; a future event without the field must not blank
-# a correct value.
-[ -n "$mode" ] || exit 0
+# turn_model <transcript> <prompt_id>: the model of that turn's reply, once it is written — the last
+# assistant entry after the user entry carrying the prompt id (assistant entries carry none). Only the
+# end of the file is read; a line cut off by `tail` fails to parse and is skipped. Also skipped:
+# subagent messages and the `<synthetic>` entries Claude writes for an API error, which no model wrote.
+turn_model() {
+    tail -c 262144 "$1" | jq -Rrn --arg p "$2" '
+        reduce (inputs | fromjson? | objects) as $e (null;
+            if $e.type == "user" and $e.promptId == $p then ""
+            elif . != null and $e.type == "assistant" and ($e.isSidechain | not)
+                and $e.message.model != "<synthetic>" then $e.message.model // .
+            else . end) // empty' 2>/dev/null
+}
 
-# Claude's own values, as of 2.1.285: default, acceptEdits, plan, auto, dontAsk, bypassPermissions.
-publish "$HERDR_PANE_ID" "$mode"
+# Stop carries no model, and its turn's reply is not in the transcript yet: Claude writes it after the
+# hook returns. So the read runs in the background, after the mode has been reported, and gives up
+# after three seconds.
+if [ "$event" = "Stop" ] && [ -n "$prompt_id" ] && [ -r "$transcript" ]; then
+    {
+        for _ in {1..30}; do
+            sleep 0.1
+            found=$(turn_model "$transcript" "$prompt_id")
+            [ -n "$found" ] && { publish "$HERDR_PANE_ID" "model=$found"; break; }
+        done
+    } </dev/null >/dev/null 2>&1 &
+fi
+
+# Only the fields this event carries are sent; publish leaves the others as they are. Claude's own
+# modes, as of 2.1.285: default, acceptEdits, plan, auto, dontAsk, bypassPermissions.
+publish "$HERDR_PANE_ID" ${mode:+"mode=$mode"} ${model:+"model=$model"}
 exit 0

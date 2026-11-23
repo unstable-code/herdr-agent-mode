@@ -1,5 +1,5 @@
 # herdr-agent-mode: show which permission mode each Claude pane is in (and which agent each opencode
-# pane is), in the agents sidebar.
+# pane is), and the model each runs on, in the agents sidebar.
 #
 # herdr knows an agent's lifecycle state (working, idle, blocked) but not the terms it works under.
 # "Claude is working" reads the same whether every edit is being approved by hand or none of them
@@ -13,7 +13,7 @@
 id = "unstable-code.herdr-agent-mode"
 name = "herdr-agent-mode"
 version = "0.1.0"
-description = "Claude's permission mode and opencode's agent (Build, Plan) as agents sidebar tokens."
+description = "Claude's permission mode, opencode's agent (Build, Plan) and the model of each, as agents sidebar tokens."
 min_herdr_version = "0.9.0"
 platforms = ["linux", "macos"]
 

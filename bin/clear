@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Drop this plugin's tokens from every pane that carries them.
+# Drop this plugin's tokens (mode, mode_label, model) from every pane that carries any of them.
 #
 # For turning the display off without removing the hooks, and for a pane whose Claude session ended
 # without its SessionEnd hook running — Claude killed rather than exited, say. A pane that is closed
@@ -25,11 +25,10 @@ panes=$("$herdr" pane list 2>/dev/null) || panes=""
 cleared=0
 while IFS= read -r pane_id; do
     [ -n "$pane_id" ] || continue
-    publish "$pane_id"
+    clear_pane "$pane_id"
     cleared=$((cleared + 1))
-done < <(jq -r --arg g "$glyph_token" --arg l "$label_token" \
-    '.result.panes[] | select(.tokens[$g]? != null or .tokens[$l]? != null) | .pane_id' \
-    <<<"$panes" 2>/dev/null)
+done < <(jq -r '.result.panes[] | select(any(.tokens[$ARGS.positional[]]?; . != null)) | .pane_id' \
+    --args "${all_tokens[@]}" <<<"$panes" 2>/dev/null)
 
 notify "Agent mode" "cleared $cleared pane(s)"
 echo "cleared $cleared pane(s)"
