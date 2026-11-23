@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Draw each agent pane's status as the one $state_<status> token, its value the pane's effort glyph
+# (#5). The only writer of those tokens.
+#
+# Usage: state          (the herdr event hook, for the pane named in HERDR_PLUGIN_EVENT_JSON)
+#        state <pane>   (a reporter that has just written a new $effort — see restate in lib.sh)
+#        state --all    (every pane: on focus changes, the install action and server start)
+#
+# The status comes from herdr, which knows it for every agent; the effort from the $effort token the
+# agent's own reporter left on the pane — or none, for an agent this plugin has no reporter for, which
+# then gets state_icon's shape. Both are read from herdr at the time of drawing, never taken from an
+# event: a hook that started late would otherwise draw a status that has since been superseded.
+# HERDR_PANE_ID is no use here — in an event hook it names the focused pane, not the event's.
+#
+# pane.agent_status_changed does not cover every change. herdr derives `done` and `idle` from one
+# state — idle, not yet looked at / looked at — and a pane is looked at when its tab is shown, with
+# no status event (herdr 0.9.5 api_helpers.rs pane_agent_status, workspace.rs switch_tab). So focus
+# changes run --all. It costs one `pane list`, and only the panes whose tokens no longer match are
+# reported: on most focus changes, none.
+set -u
+
+# shellcheck source=bin/lib.sh
+. "${0%/*}/lib.sh"
+
+command -v jq >/dev/null 2>&1 || exit 0
+command -v "$herdr" >/dev/null 2>&1 || exit 0
+
+# sync <pane> <agent> <status> <effort> <drawn>: report the pane unless <drawn> — its state tokens as
+# `key=value`, in the order of state_tokens — is already what would be set. No agent, no tokens.
+sync() {
+    local want=""
+    [ -n "$2" ] && want=$(state_token "$3" "$4")
+    [ "$5" = "$want" ] || publish_as "$state_source_id" "$1" "state=$want"
+}
+
+# One line per pane, fields joined with the unit separator for the reason given in bin/report.
+# shellcheck disable=SC2016  # jq program.
+fields='[.pane_id, (.agent // ""), (.agent_status // ""), (.tokens[$e] // ""),
+    ([$ARGS.positional[] as $k | select(.tokens[$k] != null) | "\($k)=\(.tokens[$k])"] | join(" "))]
+    | join("\u001f")'
+
+if [ "${1:-}" = "--all" ]; then
+    while IFS=$'\x1f' read -r pane agent status effort drawn; do
+        sync "$pane" "$agent" "$status" "$effort" "$drawn"
+    done < <("$herdr" pane list 2>/dev/null |
+        jq -r --arg e "$effort_token" ".result.panes[] | $fields" --args "${state_tokens[@]}" 2>/dev/null)
+    exit 0
+fi
+
+# The pane: an argument, or the event's. Pane ids are plain (`w3:pG`), so a pattern finds it without
+# another jq on what is the most frequent event of all.
+pane=${1:-}
+if [ -z "$pane" ] && [[ ${HERDR_PLUGIN_EVENT_JSON:-} =~ \"pane_id\":\"([^\"]+)\" ]]; then
+    pane=${BASH_REMATCH[1]}
+fi
+[ -n "$pane" ] || exit 0
+IFS=$'\x1f' read -r _ agent status effort drawn < <(
+    "$herdr" pane get "$pane" 2>/dev/null |
+        jq -r --arg e "$effort_token" ".result.pane | $fields" --args "${state_tokens[@]}" 2>/dev/null
+) || exit 0
+sync "$pane" "$agent" "$status" "$effort" "$drawn"
+exit 0

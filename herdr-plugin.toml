@@ -1,5 +1,6 @@
 # herdr-agent-mode: show which permission mode each Claude pane is in (and which agent each opencode
-# pane is), and the model each runs on, in the agents sidebar.
+# pane is), the model each runs on, and a status glyph shaped by its reasoning effort, in the agents
+# sidebar.
 #
 # herdr knows an agent's lifecycle state (working, idle, blocked) but not the terms it works under.
 # "Claude is working" reads the same whether every edit is being approved by hand or none of them
@@ -7,13 +8,14 @@
 #
 # The value can only come from the agent itself: Claude's hooks carry `permission_mode` on stdin, and
 # opencode's TUI plugin API knows the session's agent (opencode/tui.js). Both run inside the pane,
-# where HERDR_PANE_ID already points at it, so they report the pane token themselves and this plugin
-# needs no event hooks of its own.
+# where HERDR_PANE_ID already points at it, so they report the pane tokens themselves. The one thing
+# they cannot know is the status herdr gives the agent, so that comes from herdr: the event hooks below
+# (bin/state) draw the effort glyph in the slot of the current status.
 
 id = "unstable-code.herdr-agent-mode"
 name = "herdr-agent-mode"
 version = "0.1.0"
-description = "Claude's permission mode, opencode's agent (Build, Plan) and the model of each, as agents sidebar tokens."
+description = "Claude's permission mode, opencode's agent, the model, and a state glyph shaped by reasoning effort, as agents sidebar tokens."
 min_herdr_version = "0.9.0"
 platforms = ["linux", "macos"]
 
@@ -51,3 +53,25 @@ id = "status"
 title = "Agent mode hook status"
 contexts = ["pane", "workspace"]
 command = ["bin/hooks", "--status"]
+
+# The status half of the $state_* tokens (#5). agent_detected covers an agent arriving before its first
+# status change and one leaving (released), which clears them.
+[[events]]
+on = "pane.agent_status_changed"
+command = ["bin/state"]
+
+[[events]]
+on = "pane.agent_detected"
+command = ["bin/state"]
+
+# A pane goes from done to idle when its tab is shown, and herdr emits no status event for that. Every
+# focus change emits workspace.focused, tab.focused and pane.focused together (herdr 0.9.5 api.rs
+# emit_focus_api_events), so one of them is enough.
+[[events]]
+on = "pane.focused"
+command = ["bin/state", "--all"]
+
+# Panes that already had an agent when the plugin arrived, or when the server started, have had no
+# status change to report yet.
+[[startup]]
+command = ["bin/state", "--all"]

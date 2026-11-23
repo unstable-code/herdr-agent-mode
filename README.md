@@ -4,7 +4,9 @@
 
 A [herdr](https://herdr.dev) plugin that shows, in the agents sidebar, which permission mode each
 [Claude Code](https://claude.com/claude-code) pane is running under — and which agent (Build, Plan,
-…) each [opencode](https://opencode.ai) pane is — and which model each of them is running on.
+…) each [opencode](https://opencode.ai) pane is — and which model each of them is running on, and how
+hard it is reasoning: a status glyph in the shape of the reasoning effort, colored by the agent's
+status, that takes the place of herdr's own `state_icon`.
 
 ## Why
 
@@ -25,8 +27,9 @@ one running unattended is not always the one you remember setting that way.
   So the plugin ships a hook script and registers it in `~/.claude/settings.json`.
 - **The hook reports the pane itself.** It runs inside the pane, where herdr has already set
   `HERDR_PANE_ID`, `HERDR_SOCKET_PATH` and `HERDR_BIN_PATH`, so it calls
-  `herdr pane report-metadata` directly. This plugin therefore needs no herdr event hooks and no
-  daemon: a Claude hook *is* the event.
+  `herdr pane report-metadata` directly. No daemon is involved: a Claude hook *is* the event. The
+  one exception is the status glyph (below), which needs the status only herdr knows, and so comes
+  from herdr's event hooks.
 - **Five hooks are registered**; three carry the mode, and one the model:
 
   | Hook | When it fires | What it reports |
@@ -73,8 +76,45 @@ published under the same two tokens:
 - **The model is the same session's** (`.model.id`), published as `$model`. The TUI can also read the
   prompt's current model selection, but the agent lags (below), and a model that did not would pair
   the two in a way no message ran under.
+- **The variant is the reasoning effort** (`.model.variant`), published as `$effort` like Claude's.
 - **Every token is cleared when opencode exits**, and on the home screen, where no session is open and
   there is nothing to report.
+
+### Status and effort
+
+The first cell of a row can carry two things at once: the shape says how hard the agent reasons, and
+the color what state it is in. The shapes are the ones Claude Code itself draws for its effort
+levels, and opencode's variants have the same names:
+
+| Claude `effort` / opencode `variant` | Glyph |
+|---|---|
+| `low` | `○` |
+| `medium` | `◐` |
+| `high` | `●` |
+| `xhigh` | `◉` |
+| `max` | `◈` |
+| `none` (opencode, reasoning off) | `◌` |
+| none reported, opencode `default`, an agent with no reporter | `state_icon`'s own shape: `●` working, blocked, done; `○` idle; `·` unknown |
+| anything else | its word |
+
+- **Five tokens, one set at a time**: `$state_working`, `$state_blocked`, `$state_done`,
+  `$state_idle`, `$state_unknown`. A sidebar rule reads only its own token's value, so one glyph could
+  never be colored by a status it does not contain — but five tokens side by side, each with its own
+  `fg`, can: the pane's current status is the only one with a value, and an empty custom token is not
+  drawn at all.
+- **The status comes from herdr**, through the plugin's event hooks (`bin/state`), for every agent
+  herdr detects — an agent this plugin has no reporter for still gets its status, in `state_icon`'s
+  shape. herdr derives `done` and `idle` from one state (idle, not yet looked at / looked at) and
+  emits no status event when a pane is looked at, so focus changes re-check every pane too; only the
+  panes whose tokens no longer match are reported.
+- **The effort comes from the agent**, as `$effort` (the level as the agent names it). Claude carries
+  it as `effort.level` on `PreToolUse` and `Stop` — and leaves it out for a model without one
+  (Haiku), which clears the token. `UserPromptSubmit` and `SessionStart` never carry it.
+- **The agent's reporter never writes the status.** It could read it from herdr, but herdr's own
+  Claude integration reports the status from the same Claude events at the same time, and a status
+  read a moment too early — `working` while a permission prompt has just made it `blocked` — would
+  stay on screen until the next change. The status reports also go under their own metadata source,
+  because herdr keeps one sequence number per source and drops an older report whole.
 
 ## What it cannot do
 
@@ -96,6 +136,18 @@ next message.
 **The model lags by a turn's length.** `/model` in Claude, like a model change in opencode, shows up
 when the first turn under the new model has ended (Claude) or its message has been sent (opencode) —
 both agents record the model on what it wrote, and neither has an event for the switch itself.
+
+**In Claude, a new effort reaches the glyph when the turn ends.** `/effort` (or a model switch) reaches
+`$effort` at the next `PreToolUse` or `Stop`; the glyph is redrawn at the next status change, and in
+any case once `Stop` has written the effort — so during the first turn under a new effort the old
+shape may stay, while the color is always current. Redrawing on every tool call would cost a
+background run per call. A new session shows `state_icon`'s shape until its first turn ends. In
+opencode, a new variant is drawn as soon as its message is sent.
+
+**The colors are fixed hex values**, set in your sidebar config: herdr's token `fg` takes `#RGB` or
+`#RRGGBB` only, so they do not follow a terminal theme the way `state_icon`'s do. The collapsed
+sidebar and the space rows still use herdr's own `state_icon`; they are outside what a plugin token
+can reach.
 
 ## Requirements
 
@@ -167,18 +219,25 @@ from one that registered fewer hooks (`SessionStart` arrived with the model): ru
 once more — it replaces the old entries, and until then the startup hook shows a notification saying
 so.
 
-Finally, put the tokens in the sidebar. Three are published, and a row can use any of them:
+Finally, put the tokens in the sidebar. A row can use any of them:
 
 | Token | Value | For |
 |---|---|---|
+| `$state_working` … `$state_unknown` | the effort glyph, on the one matching the status | the first cell, in place of `state_icon` |
 | `$mode` | one glyph: `▏▎▍▌▋█` | a row with no width to spare |
 | `$mode_label` | a word: `plan`, `deny`, `manual`, `edits`, `auto`, `bypass` | a row that can afford it |
 | `$model` | the model: `opus 5.5`, `qwen3.6-35b-a3b` | a row with room for a name |
+| `$effort` | the effort as the agent names it: `high`, `none` | a row that wants the word |
+
+The five `$state_*` tokens go side by side, each with the color of its status. The colors below are
+the ones herdr's default theme gives `state_icon`:
 
 ```toml
 [ui.sidebar.agents]
 rows = [
-  ["state_icon", { token = "$mode", fg = "#999999", rules = [
+  [{ token = "$state_working", fg = "#F9E2AF" }, { token = "$state_blocked", fg = "#F38BA8" },
+   { token = "$state_done", fg = "#94E2D5" }, { token = "$state_idle", fg = "#A6E3A1" },
+   { token = "$state_unknown", fg = "#6C7086" }, { token = "$mode", fg = "#999999", rules = [
     { equals = "▌", fg = "#AF87FF" },
     { equals = "▏", fg = "#48968C" },
     { equals = "▋", fg = "#FFC107" },
@@ -203,7 +262,7 @@ you cannot reach by cycling are marked red. Claude's light theme uses `#8700FF`,
 ⚠️ Put the token at the **end** of a row unless you have width to spare. When a row does not fit,
 herdr turns every flexible token off and then re-enables them from the right, so the leftmost one is
 the first to disappear. The example above accepts that risk on purpose: one cell next to the state
-icon is worth more than a truncated word at the end.
+glyph is worth more than a truncated word at the end.
 
 A mode with no glyph — one Claude adds later — is published as its word under both tokens, so it
 shows up as text rather than as an unstyled bar that would read like any other mode.
@@ -212,7 +271,7 @@ shows up as text rather than as an unstyled bar that would read like any other m
 
 | Action | What it does |
 |---|---|
-| `install` | registers the Claude hooks in `~/.claude/settings.json` and the TUI plugin in opencode's `cli.json` |
+| `install` | registers the Claude hooks in `~/.claude/settings.json` and the TUI plugin in opencode's `cli.json`, and draws the status glyph on panes that already have an agent |
 | `uninstall` | removes them again |
 | `status` | says how many Claude hooks are registered, whether opencode is, and where |
 | `clear` | drops this plugin's tokens from every pane that has one |
@@ -268,6 +327,11 @@ and against a stand-in `settings.json` holding a foreign hook.
 | Against live Claude Code 2.1.330 | `SessionStart` carries `model` and no `permission_mode`; `Stop` carries neither model nor the turn's reply in the transcript — the reply lands about 0.1s after the hook starts. A new session shows `haiku 4.5` from `SessionStart`; after `/model sonnet` the first turn's end brings `sonnet 5.5`; `/exit` clears all three tokens |
 | Against live opencode 2.2.6 TUI | a message → `▍`/`build` with `qwen3.6-35b-a3b`; exit clears all three. A switch to another model was not tried live: the only other models configured were paid ones |
 | `clear` action | `$model` dropped along with the mode tokens, including on a pane carrying only `$model` |
+| Effort glyphs, each status | `low` `○`, `medium` `◐`, `high` `●`, `xhigh` `◉`, `max` `◈`, `none` `◌` in every status; none or `default` → `●` working/blocked/done, `○` idle, `·` unknown; an unknown level as its word |
+| `bin/state --all` over stand-in panes | only the panes whose tokens differ are reported: a `done` left on an idle pane is moved, a pane whose agent left is cleared, a matching pane and a plain shell are not touched; a status herdr adds later (`thinking`) goes to `$state_unknown` |
+| Against live Claude Code 2.1.330 | `effort` (`{"level": …}`) on `PreToolUse` and `Stop`, absent on `UserPromptSubmit` and on every event under Haiku. Sonnet at `medium`: `state_idle` → `state_working` `●` (no effort yet) → `state_done` `◐`; after `/effort low`, `$effort` changed at the first tool call and the glyph at the turn's end (`○`) |
+| Against live herdr 0.9.5 | the event hook ran on every status change (about 15 ms each); `done` → `idle` on looking at the pane emitted no status event and was picked up by the focus hook (herdr emits workspace, tab and pane focus together, so only `pane.focused` is used); install drew `state_icon`'s shapes on every existing agent pane; an agent leaving cleared all of them |
+| Against live opencode 2.2.6 TUI | `variant` `low` → `○`, cycled to `medium` with ctrl+t → `◐` after the next message; exit cleared everything |
 
 ## Third-party
 

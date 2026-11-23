@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Claude Code hook entry point: read the hook payload on stdin and report the pane's permission mode
-# and model.
+# Claude Code hook entry point: read the hook payload on stdin and report the pane's permission mode,
+# model and reasoning effort.
 #
 # Registered for UserPromptSubmit, PreToolUse and Stop, which are the events that carry
 # `permission_mode`; SessionStart, which carries the model instead (as of 2.1.330 the only event
@@ -9,6 +9,14 @@
 # After SessionStart the model comes from the transcript, where every assistant message records the
 # model that wrote it: Stop reads it there. That is how a `/model` switch reaches the sidebar — when
 # the first turn under the new model ends.
+#
+# The effort is `effort.level` in the PreToolUse and Stop payloads — when the model has one: Claude
+# leaves the field out for a model without it (Haiku), so on those two its absence clears the token.
+# UserPromptSubmit and SessionStart never carry it (2.1.330, Sonnet at `high`), so there its absence
+# says nothing. Only the level is reported here; bin/state draws it with the status, which this hook
+# never writes — herdr's own Claude hooks report the status from these same events, and a status read
+# here a moment too early would stay on screen. On Stop, bin/state is asked to redraw (restate), as
+# herdr's own `done` event may have drawn the turn's end before this hook wrote the effort.
 #
 # This runs before every single tool call, so the work per run is kept to two processes: one jq to
 # read the payload and one herdr to report it. Everything else is a bash builtin. Reading the
@@ -30,8 +38,9 @@ command -v jq >/dev/null 2>&1 || exit 0
 # disk); letting jq read stdin directly also drains it, so Claude Code never sees a broken pipe.
 # The fields are joined with the unit separator, not a tab: a tab is IFS whitespace, so `read` would
 # fold the two around an empty field into one and hand the next field to the wrong name.
-IFS=$'\x1f' read -r event mode model transcript prompt_id < <(
-    jq -r '[.hook_event_name, .permission_mode, .model, .transcript_path, .prompt_id] | map(. // "") | join("\u001f")' \
+IFS=$'\x1f' read -r event mode model transcript prompt_id effort < <(
+    jq -r '[.hook_event_name, .permission_mode, .model, .transcript_path, .prompt_id, .effort.level?]
+        | map(. // "") | join("\u001f")' \
         2>/dev/null
 ) || exit 0
 
@@ -68,7 +77,12 @@ if [ "$event" = "Stop" ] && [ -n "$prompt_id" ] && [ -r "$transcript" ]; then
     } </dev/null >/dev/null 2>&1 &
 fi
 
-# Only the fields this event carries are sent; publish leaves the others as they are. Claude's own
-# modes, as of 2.1.285: default, acceptEdits, plan, auto, dontAsk, bypassPermissions.
-publish "$HERDR_PANE_ID" ${mode:+"mode=$mode"} ${model:+"model=$model"}
+# Only the fields this event carries are sent; publish leaves the others as they are. The effort is
+# the exception on the events that would carry it, where its absence is itself the news.
+#
+# Claude's own modes, as of 2.1.285: default, acceptEdits, plan, auto, dontAsk, bypassPermissions.
+effort_field=()
+case "$event" in PreToolUse | Stop) effort_field=("effort=$effort") ;; esac
+publish "$HERDR_PANE_ID" ${mode:+"mode=$mode"} ${model:+"model=$model"} "${effort_field[@]}"
+[ "$event" = "Stop" ] && restate "$HERDR_PANE_ID"
 exit 0

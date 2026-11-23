@@ -3,8 +3,9 @@
 [English](README.md) | **한국어**
 
 [Claude Code](https://claude.com/claude-code) 페인이 지금 어떤 권한 모드로, [opencode](https://opencode.ai)
-페인이 어떤 에이전트(Build·Plan …)로 돌고 있는지, 그리고 각각 어떤 모델로 돌고 있는지를 에이전트
-사이드바에 표시하는 [herdr](https://herdr.dev) 플러그인.
+페인이 어떤 에이전트(Build·Plan …)로 돌고 있는지, 각각 어떤 모델로 얼마나 세게 추론하고 있는지를 에이전트
+사이드바에 표시하는 [herdr](https://herdr.dev) 플러그인. 추론 강도는 herdr 의 `state_icon` 자리에 들어가는
+상태 글리프의 모양으로 보이고, 색은 에이전트 상태를 따른다.
 
 ## 왜
 
@@ -23,7 +24,8 @@ herdr 는 에이전트가 *무엇을 하고 있는지*(작업 중·대기·차�
   스크립트를 제공하고 `~/.claude/settings.json` 에 등록한다.
 - **훅이 자기 페인을 직접 보고한다.** 훅은 페인 안에서 돌고, 그 환경에는 herdr 가 이미 넣어 둔
   `HERDR_PANE_ID`·`HERDR_SOCKET_PATH`·`HERDR_BIN_PATH` 가 있다. 그래서 `herdr pane report-metadata` 를
-  바로 부른다. 즉 이 플러그인에는 herdr 이벤트 훅도, 데몬도 필요 없다 — Claude 훅이 곧 이벤트다.
+  바로 부른다. 데몬도 필요 없다 — Claude 훅이 곧 이벤트다. 예외는 상태 글리프(아래)뿐이다. herdr 만 아는
+  상태가 필요해서 herdr 이벤트 훅에서 나온다.
 - **훅은 다섯을 등록하고**, 그중 셋이 모드를, 하나가 모델을 실어 온다.
 
   | 훅 | 언제 | 무엇을 보고하나 |
@@ -67,7 +69,40 @@ opencode 에는 권한 모드 대신 **에이전트**가 있다(기본은 Build 
 - **모델도 같은 세션의 것이다**(`.model.id`), `$model` 로 보인다. TUI 는 프롬프트에서 지금 고른 모델도
   읽을 수 있지만, 에이전트가 늦게 따라가므로(아래) 모델만 바로 따라가면 어느 메시지도 돈 적 없는 조합을
   보이게 된다.
+- **variant 가 추론 강도다**(`.model.variant`). Claude 와 같이 `$effort` 로 보인다.
 - **opencode 를 끝내면 모든 토큰을 지운다.** 세션이 없는 홈 화면에서도 지운다 — 보고할 것이 없다.
+
+### 상태와 추론 강도
+
+행의 첫 칸에 두 가지를 함께 담는다. 모양은 에이전트가 얼마나 세게 추론하는지를, 색은 어떤 상태인지를
+나타낸다. 모양은 Claude Code 가 effort 단계마다 직접 그리는 글리프이고, opencode 의 variant 도 이름이 같다.
+
+| Claude `effort` / opencode `variant` | 글리프 |
+|---|---|
+| `low` | `○` |
+| `medium` | `◐` |
+| `high` | `●` |
+| `xhigh` | `◉` |
+| `max` | `◈` |
+| `none`(opencode, 추론 끔) | `◌` |
+| 보고 없음, opencode `default`, 보고 경로가 없는 에이전트 | `state_icon` 과 같은 모양: working·blocked·done `●`, idle `○`, unknown `·` |
+| 그 밖 | 그 단어 그대로 |
+
+- **토큰 다섯 개 중 하나만 켠다**: `$state_working`·`$state_blocked`·`$state_done`·`$state_idle`·
+  `$state_unknown`. 사이드바 규칙은 그 토큰 자신의 값만 보므로, 글리프 하나에 그 값에 없는 상태로 색을 입힐
+  수는 없다. 대신 토큰 다섯 개를 나란히 두고 각자 `fg` 를 주면 된다 — 지금 상태의 토큰에만 값이 있고, 값이
+  없는 사용자 정의 토큰은 아예 그려지지 않는다.
+- **상태는 herdr 에서 온다.** 플러그인의 이벤트 훅(`bin/state`)이 herdr 가 감지하는 모든 에이전트에 대해
+  보고한다 — 이 플러그인에 보고 경로가 없는 에이전트도 상태는 `state_icon` 모양으로 보인다. herdr 는 `done`
+  과 `idle` 을 한 상태에서 파생하고(봤는가/안 봤는가), 페인을 보는 순간에는 상태 이벤트를 내지 않는다. 그래서
+  포커스가 바뀔 때도 모든 페인을 다시 확인하고, 토큰이 어긋난 페인만 보고한다.
+- **추론 강도는 에이전트에서 온다**(`$effort`, 에이전트가 부르는 이름 그대로). Claude 는 `PreToolUse` 와
+  `Stop` 에 `effort.level` 로 싣고, effort 가 없는 모델(Haiku)에서는 빼므로 그때는 토큰을 지운다.
+  `UserPromptSubmit` 과 `SessionStart` 에는 실리지 않는다.
+- **에이전트 쪽 보고 경로는 상태를 쓰지 않는다.** herdr 에서 읽을 수는 있지만, herdr 자신의 Claude 통합이 같은
+  Claude 이벤트에서 동시에 상태를 보고한다. 한발 일찍 읽은 상태 — 권한 프롬프트로 막 `blocked` 가 됐는데
+  `working` — 는 다음 변화까지 화면에 남는다. 상태 보고는 별도의 metadata source 로 보낸다. herdr 는 source
+  마다 seq 하나를 두고 그보다 오래된 보고를 통째로 버리기 때문이다.
 
 ## 못 하는 것
 
@@ -88,6 +123,16 @@ Claude Code 에는 모드 변경으로 발생하는 훅 이벤트가 없고, 세
 **모델은 한 턴만큼 늦다.** Claude 의 `/model` 은 새 모델로 도는 첫 턴이 끝난 뒤에, opencode 의 모델 변경은
 그 모델로 메시지를 보낸 뒤에 나타난다. 두 에이전트 모두 모델을 자기가 쓴 기록에 남기고, 바꾸는 순간 자체에
 대한 이벤트는 없다.
+
+**Claude 에서 바꾼 추론 강도는 턴이 끝날 때 글리프에 나타난다.** `/effort`(또는 모델 전환)는 다음
+`PreToolUse` 나 `Stop` 에서 `$effort` 에 닿는다. 글리프는 다음 상태 변화 때, 그리고 늦어도 `Stop` 이 강도를
+쓴 뒤에 다시 그려진다. 그래서 새 강도로 도는 첫 턴 동안에는 옛 모양이 남을 수 있다. 색은 언제나 지금
+상태다. 도구 호출마다 다시 그리면 호출마다 백그라운드 실행이 하나씩 붙는다. 새 세션도 첫 턴이 끝나기
+전까지는 `state_icon` 모양이다. opencode 는 바꾼 variant 가 메시지를 보내는 즉시 그려진다.
+
+**색은 고정된 hex 값이고** 사이드바 설정에서 정한다. herdr 의 토큰 `fg` 는 `#RGB`·`#RRGGBB` 만 받으므로,
+`state_icon` 처럼 터미널 테마를 따라가지 않는다. 접힌 사이드바와 space 행은 여전히 herdr 자신의 `state_icon` 을
+쓴다. 플러그인 토큰이 닿지 않는 영역이다.
 
 ## 요구사항
 
@@ -152,18 +197,25 @@ Claude 는 훅 명령을 `/bin/sh` 로 돌리는데, 이 실패는 스크립트�
 버전, 또는 훅을 더 적게 등록하던 버전(`SessionStart` 는 모델과 함께 들어왔다)에서 올라왔다면 install 액션을
 한 번 더 돌린다 — 옛 항목을 바꿔 주며, 그 전까지는 startup 훅이 그렇다는 알림을 띄운다.
 
-마지막으로 토큰을 사이드바에 올린다. 토큰은 셋이고, 행은 그중 어느 것을 써도 된다.
+마지막으로 토큰을 사이드바에 올린다. 행은 그중 어느 것을 써도 된다.
 
 | 토큰 | 값 | 쓰임 |
 |---|---|---|
+| `$state_working` … `$state_unknown` | 추론 강도 글리프, 상태가 맞는 하나에만 | 첫 칸, `state_icon` 대신 |
 | `$mode` | 글리프 한 칸: `▏▎▍▌▋█` | 폭이 없는 행 |
 | `$mode_label` | 단어: `plan`·`deny`·`manual`·`edits`·`auto`·`bypass` | 폭이 되는 행 |
 | `$model` | 모델: `opus 5.5`·`qwen3.6-35b-a3b` | 이름이 들어갈 폭이 있는 행 |
+| `$effort` | 에이전트가 부르는 추론 강도: `high`·`none` | 단어로 보고 싶은 행 |
+
+`$state_*` 다섯 개는 나란히 두고 각각 그 상태의 색을 준다. 아래 색은 herdr 기본 테마가 `state_icon` 에 쓰는
+값이다.
 
 ```toml
 [ui.sidebar.agents]
 rows = [
-  ["state_icon", { token = "$mode", fg = "#999999", rules = [
+  [{ token = "$state_working", fg = "#F9E2AF" }, { token = "$state_blocked", fg = "#F38BA8" },
+   { token = "$state_done", fg = "#94E2D5" }, { token = "$state_idle", fg = "#A6E3A1" },
+   { token = "$state_unknown", fg = "#6C7086" }, { token = "$mode", fg = "#999999", rules = [
     { equals = "▌", fg = "#AF87FF" },
     { equals = "▏", fg = "#48968C" },
     { equals = "▋", fg = "#FFC107" },
@@ -185,7 +237,7 @@ auto `#FFC107`(Claude 의 `warning` 토큰). manual 은 거기서 고유한 색 
 
 ⚠️ 폭이 넉넉하지 않다면 토큰을 행의 **맨 끝**에 둘 것. 행이 안 들어가면 herdr 는 가변 칸을 전부 끈 뒤
 오른쪽부터 다시 켜므로 맨 왼쪽 칸이 가장 먼저 사라진다. 위 예시는 그 위험을 알고 감수한 것이다 — 상태
-아이콘 옆 한 칸이 끝에서 잘린 단어보다 낫다는 판단이다.
+글리프 옆 한 칸이 끝에서 잘린 단어보다 낫다는 판단이다.
 
 글리프가 없는 모드(Claude 가 나중에 추가하는 것)는 두 토큰 모두 단어로 나간다. 규칙 없는 글리프는 그냥
 회색 막대라 다른 모드처럼 보이지만, 글자는 눈에 띄기 때문이다.
@@ -194,7 +246,7 @@ auto `#FFC107`(Claude 의 `warning` 토큰). manual 은 거기서 고유한 색 
 
 | 액션 | 하는 일 |
 |---|---|
-| `install` | `~/.claude/settings.json` 에 Claude 훅을, opencode `cli.json` 에 TUI 플러그인을 등록 |
+| `install` | `~/.claude/settings.json` 에 Claude 훅을, opencode `cli.json` 에 TUI 플러그인을 등록하고, 이미 에이전트가 있는 페인에 상태 글리프를 그림 |
 | `uninstall` | 다시 제거 |
 | `status` | Claude 훅이 몇 개 등록돼 있는지, opencode 에 등록돼 있는지, 각각 어디에 있는지 |
 | `clear` | 토큰이 붙은 모든 페인에서 이 플러그인의 토큰을 제거 |
@@ -249,6 +301,11 @@ auto `#FFC107`(Claude 의 `warning` 토큰). manual 은 거기서 고유한 색 
 | 실제 Claude Code 2.1.330 에 대고 | `SessionStart` 에 `model` 이 있고 `permission_mode` 는 없음. `Stop` 에는 모델이 없고 transcript 에도 그 턴의 응답이 아직 없음 — 응답은 훅 시작 약 0.1초 뒤에 기록됨. 새 세션에 `SessionStart` 로 `haiku 4.5`, `/model sonnet` 뒤 첫 턴이 끝나자 `sonnet 5.5`, `/exit` 로 세 토큰 모두 삭제 |
 | 실제 opencode 2.2.6 TUI 에 대고 | 메시지 → `▍`/`build` 와 `qwen3.6-35b-a3b`, 종료 → 세 토큰 삭제. 다른 모델로의 전환은 실측하지 않음 — 설정된 다른 모델이 유료 모델뿐이었다 |
 | `clear` 액션 | 모드 토큰과 함께 `$model` 도 삭제. `$model` 만 붙은 페인도 대상 |
+| 상태별 추론 강도 글리프 | 모든 상태에서 `low` `○`·`medium` `◐`·`high` `●`·`xhigh` `◉`·`max` `◈`·`none` `◌`. 없음이나 `default` 는 working·blocked·done `●`, idle `○`, unknown `·`. 모르는 단계는 그 단어 그대로 |
+| 대역 페인에 `bin/state --all` | 토큰이 어긋난 페인만 보고: idle 페인에 남은 `done` 은 옮기고, 에이전트가 떠난 페인은 지우며, 맞는 페인과 일반 셸은 건드리지 않음. herdr 가 나중에 더할 상태(`thinking`)는 `$state_unknown` 으로 |
+| 실제 Claude Code 2.1.330 에 대고 | `effort`(`{"level": …}`)는 `PreToolUse`·`Stop` 에 있고 `UserPromptSubmit` 과 Haiku 의 모든 이벤트에는 없음. Sonnet `medium`: `state_idle` → `state_working` `●`(아직 effort 없음) → `state_done` `◐`. `/effort low` 뒤 첫 도구 호출에서 `$effort` 가, 턴이 끝날 때 글리프가 `○` 로 바뀜 |
+| 실제 herdr 0.9.5 에 대고 | 상태가 바뀔 때마다 이벤트 훅이 돎(회당 약 15ms). 페인을 봐서 `done` → `idle` 이 될 때는 상태 이벤트가 없었고 포커스 훅이 잡아냄(herdr 는 workspace·tab·pane 포커스 이벤트를 함께 내므로 `pane.focused` 하나만 쓴다). install 이 기존 에이전트 페인 전부에 `state_icon` 모양을 그림. 에이전트가 떠나면 전부 삭제 |
+| 실제 opencode 2.2.6 TUI 에 대고 | `variant` `low` → `○`, ctrl+t 로 `medium` 으로 바꾸고 메시지를 보내자 `◐`. 종료하면 전부 삭제 |
 
 ## 제3자 저작물
 

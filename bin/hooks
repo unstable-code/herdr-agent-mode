@@ -200,6 +200,9 @@ case "${1:---status}" in
         else
             echo "no opencode cli.json at $opencode_cli — skipped"
         fi
+        # The status glyphs need no file of ours, only herdr: draw them now on the panes that already
+        # have an agent, rather than at each one's next status change.
+        "$bin_dir/state" --all
         notify "Agent mode installed" "$claude_msg, $opencode_msg"
         ;;
     --remove)

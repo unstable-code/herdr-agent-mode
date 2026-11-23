@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
-# Shared helpers for bin/report (the Claude hook entry point), bin/hooks and bin/clear.
+# Shared helpers for bin/report (the Claude hook entry point), bin/state (the herdr event hook),
+# bin/publish (opencode's), bin/hooks and bin/clear.
 
 herdr=${HERDR_BIN_PATH:-herdr}
 source_id=unstable-code.herdr-agent-mode
+# The $state_* tokens are written under their own source, and only under it — the sequence rule (see
+# publish) would otherwise let a status report and a mode report drop each other. Between two status
+# reports, dropping the older is exactly right.
+state_source_id=$source_id.state
 glyph_token=mode
 label_token=mode_label
 model_token=model
+effort_token=effort
+# One token per agent status (#5), and exactly one of them is set on a pane at a time. A sidebar rule
+# reads only its own token's value, so the effort glyph cannot be colored by the status it sits
+# beside — but five tokens, each colored in the row, can: the one that is set is the one that shows.
+statuses=(working blocked "done" idle unknown)
+state_tokens=("${statuses[@]/#/state_}")
 # shellcheck disable=SC2034  # bin/hooks uses it; this file is sourced, not run.
 settings_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
 
@@ -91,6 +102,37 @@ model_label() {
     fi
 }
 
+# effort_glyph <effort> <status>: the shapes are Claude Code's own (2.1.330); opencode's variants share
+# the level names. `none` takes the empty circle neither Claude nor herdr uses. No effort falls back
+# to state_icon's shape for the status, so an agent this plugin knows nothing about looks as before.
+# An unknown level is its word: a glyph nobody wrote down would pass for one that means something.
+effort_glyph() {
+    case "$1" in
+        low) printf '○\n' ;;
+        medium) printf '◐\n' ;;
+        high) printf '●\n' ;;
+        xhigh) printf '◉\n' ;;
+        max) printf '◈\n' ;;
+        none) printf '◌\n' ;;
+        "" | default)
+            case "$2" in
+                idle) printf '○\n' ;;
+                unknown) printf '·\n' ;;
+                *) printf '●\n' ;;
+            esac
+            ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
+# state_token <status> <effort>: the one state token to set, as `state_<status>=<glyph>`. A status
+# herdr adds later counts as `unknown`.
+state_token() {
+    local status=$1
+    [[ " ${statuses[*]} " == *" $status "* ]] || status=unknown
+    printf 'state_%s=%s\n' "$status" "$(effort_glyph "$2" "$status")"
+}
+
 # True when this process is running inside a herdr pane that can be reported on. Every caller fails
 # closed on this: a Claude session started outside herdr must not make the hook noisy or slow.
 in_herdr_pane() {
@@ -101,16 +143,22 @@ in_herdr_pane() {
     return 0
 }
 
-# publish <pane> [mode=<mode>] [model=<model>]: report the given fields in one call. A field left out
-# is left as it is, and one given empty is cleared.
+# publish <pane> [field=<value>]...: report the given fields in one call. A field left out is left as
+# it is, and one given empty is cleared. The fields:
+#   mode=<mode>               $mode and $mode_label
+#   model=<model>             $model
+#   effort=<effort>           $effort, the level as the agent names it
+#   state=<state_token>       that one $state_* token (see state_token), the other four cleared;
+#                             only under $state_source_id
 #
 # One call rather than one per field, because herdr keeps a single sequence number per source and
 # drops a report older than it whole — a model sent on its own could be lost to a mode report that
 # overtook it. The two shapes of the mode share the call for a plainer reason: a row showing the bar
 # of one mode beside the word of another would be worse than showing nothing.
-publish() {
-    local pane=$1 field value args=()
-    shift
+publish() { publish_as "$source_id" "$@"; }
+publish_as() {
+    local source=$1 pane=$2 field value t args=()
+    shift 2
     for field; do
         value=${field#*=}
         case "$field" in
@@ -119,17 +167,33 @@ publish() {
             mode=) args+=(--clear-token "$glyph_token" --clear-token "$label_token") ;;
             model=?*) args+=(--token "$model_token=$(model_label "$value")") ;;
             model=) args+=(--clear-token "$model_token") ;;
+            effort=?*) args+=(--token "$effort_token=$value") ;;
+            effort=) args+=(--clear-token "$effort_token") ;;
+            state=*)
+                for t in "${state_tokens[@]}"; do
+                    if [ "$t" = "${value%%=*}" ]; then args+=(--token "$value"); else args+=(--clear-token "$t"); fi
+                done
+                ;;
         esac
     done
     [ ${#args[@]} -gt 0 ] || return 0
-    "$herdr" pane report-metadata "$pane" --source "$source_id" --seq "$(now_ms)" "${args[@]}" >/dev/null 2>&1
+    "$herdr" pane report-metadata "$pane" --source "$source" --seq "$(now_ms)" "${args[@]}" >/dev/null 2>&1
 }
 
-# Every token publish can set, and the call that clears them all. A field added to publish goes in
-# both, and bin/clear and SessionEnd follow.
+# Every token publish can set, and the call that clears them all — each under the source that owns
+# it. A field added to publish goes in both, and bin/clear and SessionEnd follow.
 # shellcheck disable=SC2034  # bin/clear uses it.
-all_tokens=("$glyph_token" "$label_token" "$model_token")
-clear_pane() { publish "$1" mode= model=; }
+all_tokens=("$glyph_token" "$label_token" "$model_token" "$effort_token" "${state_tokens[@]}")
+clear_pane() {
+    publish "$1" mode= model= effort=
+    publish_as "$state_source_id" "$1" state=
+}
+
+# restate <pane>: have bin/state redraw the pane's glyph, in the background and a moment later. Called
+# by a reporter that has just written a new $effort, which no herdr event follows. The delay lets a
+# status change herdr is making from the same agent event land first; bin/state reads both values
+# fresh and writes only if they differ from what is drawn.
+restate() { { sleep 0.3; "${0%/*}/state" "$1"; } </dev/null >/dev/null 2>&1 & }
 
 # Actions report back as a herdr notification, the way the sibling plugins do: an action invoked
 # from a key or the UI is otherwise silent, and its failures would only ever reach `herdr plugin

@@ -1,5 +1,5 @@
-// herdr-agent-mode: opencode's agent (Build, Plan, ...) as the $mode / $mode_label pane tokens, and
-// its model as $model.
+// herdr-agent-mode: opencode's agent (Build, Plan, ...) as the $mode / $mode_label pane tokens, its
+// model as $model, and its variant (the reasoning effort) as $effort.
 //
 // This is an opencode 2.x TUI plugin. The install action registers this directory in opencode's
 // cli.json "plugins" list — through a link in the herdr plugin's state directory, so an update that
@@ -12,14 +12,14 @@
 // The agent comes from the selected session (api.data.session.get(id).agent). opencode records the
 // agent when a message is sent, not when shift+tab cycles it, and the TUI plugin API does not expose
 // the prompt's own selection — so, as with Claude, the sidebar shows what the last message ran
-// under. The model comes from the same session (.model.id) and follows the same rule; the prompt's
-// own model selection is readable, but showing it beside an agent that lags would describe a pairing
-// no message ran under. With no session open (the home screen) there is nothing to report and the
-// tokens are cleared.
+// under. The model and variant come from the same session (.model.id, .model.variant) and follow the
+// same rule; the prompt's own model selection is readable, but showing it beside an agent that lags
+// would describe a pairing no message ran under. With no session open (the home screen) there is
+// nothing to report and the tokens are cleared.
 //
 // Reporting goes through bin/publish, the same lib.sh code the Claude hook uses, so the glyph table,
-// the token names and the sequence rule exist once. It runs only when the agent or model changes. Every
-// failure is silent: outside herdr, a missing script, an API this opencode does not have.
+// the token names and the sequence rule exist once. It runs only when one of the fields changes.
+// Every failure is silent: outside herdr, a missing script, an API this opencode does not have.
 
 import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
@@ -29,6 +29,8 @@ import { fileURLToPath } from "node:url";
 const ID = "unstable-code.herdr-agent-mode";
 // The route has no change event; herdr's integration polls it at the same rate.
 const POLL_MS = 200;
+// What a fresh pane shows, in bin/publish's argument order: agent, model, variant.
+const EMPTY = ["", "", ""];
 
 // This file's real location, not the state-directory link it was loaded through: bin/ sits next to
 // opencode/ in the installation, while the state directory has a bin link only where Claude hooks
@@ -38,13 +40,13 @@ try {
   publishPath = join(dirname(realpathSync(fileURLToPath(import.meta.url))), "..", "bin", "publish");
 } catch {}
 
-// publish(agent, model) resolves when the report has been made; an empty field clears its tokens.
+// publish(fields) resolves when the report has been made; an empty field clears its tokens.
 // bin/publish takes its sequence number when it runs, so reports go one at a time: two in flight
 // could land in the wrong order.
-function publish(agent, model, options = {}) {
+function publish(fields, options = {}) {
   return new Promise((resolve) => {
     if (!publishPath) return resolve();
-    const child = spawn(publishPath, [agent, model], { stdio: "ignore", ...options });
+    const child = spawn(publishPath, fields, { stdio: "ignore", ...options });
     child.on("error", resolve);
     child.on("exit", resolve);
     if (options.detached) {
@@ -54,31 +56,29 @@ function publish(agent, model, options = {}) {
   });
 }
 
+const same = (a, b) => a.every((value, i) => value === b[i]);
+
 function setup(api) {
   if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_PANE_ID) return;
 
-  // What was last published. Empty is what a fresh pane shows, so the home screen publishes nothing.
-  let lastAgent = "";
-  let lastModel = "";
+  // What was last published. It starts empty, so the home screen publishes nothing.
+  let last = EMPTY;
   let chain = Promise.resolve();
 
   function sync() {
-    let agent = "";
-    let model = "";
+    let fields = EMPTY;
     try {
       const route = api.ui.router.current();
       if (route.type === "session") {
         const session = api.data.session.get(route.sessionID);
-        agent = session?.agent ?? "";
-        model = session?.model?.id ?? "";
+        fields = [session?.agent, session?.model?.id, session?.model?.variant].map((v) => v ?? "");
       }
     } catch {
       return;
     }
-    if (agent === lastAgent && model === lastModel) return;
-    lastAgent = agent;
-    lastModel = model;
-    chain = chain.then(() => publish(agent, model));
+    if (same(fields, last)) return;
+    last = fields;
+    chain = chain.then(() => publish(fields));
   }
 
   // Fires as the message that records a new agent is sent; the poll would catch it a moment later.
@@ -91,7 +91,7 @@ function setup(api) {
     off();
     // The pane outlives opencode; a mode left behind would describe an agent that is gone. Detached,
     // because opencode may exit before the report finishes.
-    if (lastAgent || lastModel) publish("", "", { detached: true });
+    if (!same(last, EMPTY)) publish(EMPTY, { detached: true });
   };
 }
 

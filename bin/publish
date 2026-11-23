@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
-# Report the agent and model for the pane this runs in. An empty or missing field clears its tokens.
+# Report the agent, model and variant for the pane this runs in. An empty or missing field clears its
+# tokens.
 #
-# Usage: publish [agent] [model]
+# Usage: publish [agent] [model] [variant]
 #
 # The entry point for opencode/tui.js, so that the glyph table, the token names and the sequence rule
 # exist once, in lib.sh, for every agent this plugin reads. It runs inside the pane like bin/report
 # and fails just as quietly. Unlike a Claude hook, which sees only what its event carries, opencode
-# knows its whole state at every call, so both fields are always sent.
+# knows its whole state at every call, so every field is always sent. The variant is opencode's
+# reasoning effort and goes to the same $effort token as Claude's; bin/state draws it.
 set -u
 
 # shellcheck source=bin/lib.sh
 . "${0%/*}/lib.sh"
 
 in_herdr_pane || exit 0
-publish "$HERDR_PANE_ID" "mode=${1:-}" "model=${2:-}"
+publish "$HERDR_PANE_ID" "mode=${1:-}" "model=${2:-}" "effort=${3:-}"
+# A new variant comes with no herdr event; have bin/state redraw the glyph.
+restate "$HERDR_PANE_ID"
 exit 0
