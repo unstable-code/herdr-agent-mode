@@ -2,8 +2,9 @@
 
 [English](README.md) | **한국어**
 
-[Claude Code](https://claude.com/claude-code) 페인이 지금 어떤 권한 모드로 돌고 있는지를
-에이전트 사이드바에 표시하는 [herdr](https://herdr.dev) 플러그인.
+[Claude Code](https://claude.com/claude-code) 페인이 지금 어떤 권한 모드로, [opencode](https://opencode.ai)
+페인이 어떤 에이전트(Build·Plan …)로 돌고 있는지를 에이전트 사이드바에 표시하는 [herdr](https://herdr.dev)
+플러그인.
 
 ## 왜
 
@@ -38,6 +39,24 @@ herdr 는 에이전트가 *무엇을 하고 있는지*(작업 중·대기·차�
   끝나고 아무것도 보고하지 않는다. stderr 에 뭔가 쓰는 훅은 사용자가 신경 써야 하는 훅이고, 여기서 하는
   일 중 세션을 방해할 만큼 중요한 것은 없다 — 최악이라야 사이드바에 직전 모드가 남을 뿐이다.
 
+### opencode
+
+opencode 에는 권한 모드 대신 **에이전트**가 있다(기본은 Build 와 Plan). 같은 두 토큰으로 보인다.
+
+| 에이전트 | `$mode` | `$mode_label` |
+|---|---|---|
+| `plan` | `▏` — Claude plan 처럼 읽기만 한다 | `plan` |
+| `build` | `▍` — Claude manual 처럼 권한을 묻는다 | `build` |
+| 그 밖(사용자 정의 에이전트) | 그 이름 그대로 | 그 이름 그대로 |
+
+- **opencode 2.x 의 TUI 플러그인이다.** `opencode/tui.js` 를 opencode 의 `cli.json` 에 있는 `"plugins"`
+  목록에 등록한다. 서버 쪽 훅(`chat.message`)이 아닌 이유는, 일반 TUI 에서는 서버가 공유되거나 별도
+  worker 에서 돌아 어느 페인인지 알 수 없기 때문이다. herdr 자신의 opencode 통합도 같은 이유로 TUI
+  플러그인에서 보고한다.
+- **값은 선택된 세션의 에이전트다**(`api.data.session.get(id).agent`). 바뀌면 `bin/publish` 를 실행해
+  Claude 훅과 같은 `lib.sh` 코드로 보고한다 — 글리프 표·토큰 이름·seq 규칙이 두 에이전트에 한 벌뿐이다.
+- **opencode 를 끝내면 두 토큰을 지운다.** 세션이 없는 홈 화면에서도 지운다 — 보고할 에이전트가 없다.
+
 ## 못 하는 것
 
 **사이드바가 보여주는 것은 그 페인이 마지막으로 뭔가 한 시점의 모드이지, 지금 이 순간의 설정이 아니다.**
@@ -50,10 +69,15 @@ Claude Code 에는 모드 변경으로 발생하는 훅 이벤트가 없고, 세
 (`claude --permission-mode …`, `--dangerously-skip-permissions`, 설정의 `defaultMode`). 그래서 이 둘은
 늦을 것 자체가 없다.
 
+**opencode 도 같은 지연이 있다.** opencode 는 에이전트를 메시지를 보낼 때 세션에 기록한다. `shift+tab`
+만 누르면 프롬프트의 표시만 바뀌고, 그 선택을 읽는 API 는 TUI 플러그인에 없다(모델과 variant 는 있다).
+그래서 바꾼 에이전트는 다음 메시지를 보낼 때 사이드바에 나타난다.
+
 ## 요구사항
 
 - herdr ≥ 0.9.0 (Linux / macOS)
-- Claude Code, 쓰기 가능한 `~/.claude/settings.json`
+- Claude Code, 쓰기 가능한 `~/.claude/settings.json` — 그리고/또는
+- opencode 2.x, 쓰기 가능한 `cli.json`(`$OPENCODE_CONFIG_DIR` 또는 `~/.config/opencode/`)
 - herdr 서버의 `PATH` 에 `bash` 와 `jq`
 
 ## 설치
@@ -79,6 +103,14 @@ herdr plugin action invoke unstable-code.herdr-agent-mode.install
 다른 훅과 설정은 건드리지 않는다. 자기 항목은 명령 문자열이 아니라 마커 주석으로 식별하므로, 다시
 설치하면 예전 항목을 바꿀 뿐 두 벌이 되지 않는다. `uninstall` 이 되돌리고(`herdr plugin uninstall` 은
 이걸 하지 않으니 그 전에 돌린다), `status` 가 링크와 등록된 명령을 보여 준다. 돌고 있는 Claude 세션도 재시작 없이 반영된다.
+
+같은 액션이 opencode 도 등록한다. `cli.json` 의 `"plugins"` 에 플러그인 상태 디렉터리의 링크
+(`…/unstable-code.herdr-agent-mode/opencode`)를 더하고, 그 링크는 설치본의 `opencode/` 를 가리킨다 —
+아래에서 설명하는 Claude 쪽 링크와 같은 이유다. herdr 자신의 `./herdr-opencode` 를 비롯한 다른 항목은
+건드리지 않는다. 열려 있는 opencode 는 다음에 시작할 때 반영된다. 두 에이전트 중 설정 파일이 없는 쪽은
+건너뛰고, 둘 다 없을 때만 실패한다. `cli.json` 에 주석이 있으면(JSONC) jq 로는 서식을 지킬 수 없어 손대지
+않고, 직접 더할 경로를 알려 준다. `cli.json` 은 기기마다 따로 있으니 install 액션은 opencode 를 쓰는
+기기마다 돌린다.
 
 등록되는 명령은 설치본이 아니라 링크를 가리키고, 자기 존재 검사를 달고 간다.
 
@@ -145,9 +177,9 @@ auto `#FFC107`(Claude 의 `warning` 토큰). manual 은 거기서 고유한 색 
 
 | 액션 | 하는 일 |
 |---|---|
-| `install` | `~/.claude/settings.json` 에 Claude 훅을 등록 |
+| `install` | `~/.claude/settings.json` 에 Claude 훅을, opencode `cli.json` 에 TUI 플러그인을 등록 |
 | `uninstall` | 다시 제거 |
-| `status` | 자기 훅이 몇 개 등록돼 있는지, 어디에 있는지 |
+| `status` | Claude 훅이 몇 개 등록돼 있는지, opencode 에 등록돼 있는지, 각각 어디에 있는지 |
 | `clear` | 토큰이 붙은 모든 페인에서 두 토큰을 제거 |
 
 각 액션은 herdr 알림으로 요약을 보고하고, 자세한 내용은 `herdr plugin log` 로 간다.
@@ -188,6 +220,12 @@ auto `#FFC107`(Claude 의 `warning` 토큰). manual 은 거기서 고유한 색 
 | `uninstall` 후 재시작 | 훅과 함께 링크 제거, startup 훅이 다시 만들지 않음 |
 | 상태 디렉터리가 `$HOME` 밖 | 명령에 절대경로로 기록 |
 | 실제 Claude Code 2.1.285 에 대고 | `permission_mode` 가 `UserPromptSubmit`·`PreToolUse`·`Stop` 에 있고 `Notification` 에는 없음. 설정에 넣은 훅이 세션 재시작 없이 적용됨 |
+| `cli.json` 에 herdr 항목이 있는 채로 install·재실행·uninstall (대역 파일) | 링크 항목이 끝에 더해지고, 재실행은 파일을 다시 쓰지 않으며, uninstall 후 원래 내용과 같음. `./herdr-opencode` 는 그대로 |
+| 다른 상태 디렉터리에서 남은 옛 항목 | install 이 쓸어 내고 지금 링크 하나만 남김 |
+| 주석이 든 `cli.json`(JSONC) | 손대지 않고 직접 더할 경로를 안내 |
+| opencode 만 있는 기기 / 둘 다 없는 기기 | Claude 는 건너뛰고 opencode 만 등록 / 종료 코드 1 |
+| opencode 링크를 지우고 startup 훅 명령(`hooks --relink`) 실행 | `cli.json` 의 항목을 보고 링크를 다시 만듦 |
+| 실제 opencode 2.2.6 TUI 에 대고 | 홈 화면에서는 토큰 없음. Build 로 메시지 → `▍`/`build`, `shift+tab` 만 → 그대로, Plan 으로 메시지 → `▏`/`plan`, opencode 종료 → 두 토큰 삭제. 절대 경로로 등록한 플러그인 디렉터리가 로드됨 |
 
 ## 제3자 저작물
 

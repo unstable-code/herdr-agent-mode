@@ -3,7 +3,8 @@
 **English** | [한국어](README.ko.md)
 
 A [herdr](https://herdr.dev) plugin that shows, in the agents sidebar, which permission mode each
-[Claude Code](https://claude.com/claude-code) pane is running under.
+[Claude Code](https://claude.com/claude-code) pane is running under — and which agent (Build, Plan,
+…) each [opencode](https://opencode.ai) pane is.
 
 ## Why
 
@@ -41,6 +42,27 @@ one running unattended is not always the one you remember setting that way.
   hook exits 0 and reports nothing. A hook that writes to stderr is a hook you have to think about,
   and nothing here is worth interrupting a session for — at worst the sidebar keeps the last mode.
 
+### opencode
+
+opencode has **agents** where Claude has permission modes (Build and Plan by default). They are
+published under the same two tokens:
+
+| Agent | `$mode` | `$mode_label` |
+|---|---|---|
+| `plan` | `▏` — reads only, like Claude's plan | `plan` |
+| `build` | `▍` — asks for permission, like Claude's manual | `build` |
+| anything else (a custom agent) | its name | its name |
+
+- **It is an opencode 2.x TUI plugin**: `opencode/tui.js`, registered in the `"plugins"` list of
+  opencode's `cli.json`. Not a server hook such as `chat.message`, because in the full TUI the server
+  may be shared or run in a worker that cannot tell which pane it serves; herdr's own opencode
+  integration reports from its TUI plugin for the same reason.
+- **The value is the selected session's agent** (`api.data.session.get(id).agent`). When it changes,
+  the plugin runs `bin/publish`, which reports through the same `lib.sh` code as the Claude hook — the
+  glyph table, the token names and the sequence rule exist once for both agents.
+- **Both tokens are cleared when opencode exits**, and on the home screen, where no session is open and
+  there is no agent to report.
+
 ## What it cannot do
 
 **The sidebar shows the mode as of the pane's last activity, not as of right now.** Claude Code has
@@ -53,10 +75,16 @@ worth knowing that the sidebar answers "what was it running as" rather than "wha
 session starts (`claude --permission-mode …`, `--dangerously-skip-permissions`, or `defaultMode` in
 settings), so for those two there is nothing to lag behind.
 
+**opencode lags the same way.** It records the agent on the session when a message is sent; cycling
+with `shift+tab` only changes what the prompt shows, and the TUI plugin API has no way to read that
+selection (it has one for the model and variant). A newly chosen agent appears in the sidebar with the
+next message.
+
 ## Requirements
 
 - herdr ≥ 0.9.0 (Linux / macOS)
-- Claude Code, with a writable `~/.claude/settings.json`
+- Claude Code, with a writable `~/.claude/settings.json` — and/or
+- opencode 2.x, with a writable `cli.json` (in `$OPENCODE_CONFIG_DIR` or `~/.config/opencode/`)
 - `bash` and `jq` on the herdr server's `PATH`
 
 ## Installation
@@ -84,6 +112,15 @@ It leaves every other hook and setting alone, and it owns its entries by a marke
 than by the command string, so installing again replaces an older entry of its own instead of adding
 a second one. The `uninstall` action takes the hooks back out (run it before `herdr plugin
 uninstall`, which does not), and `status` shows the link and the registered command. Running Claude sessions pick up a change without restarting.
+
+The same action registers opencode: it adds a link in the plugin's state directory
+(`…/unstable-code.herdr-agent-mode/opencode`) to the `"plugins"` list in `cli.json`, and the link
+points at the installation's `opencode/` — for the same reason as the Claude link described below.
+Every other entry, herdr's own `./herdr-opencode` included, is left alone. A running opencode picks it
+up on its next start. Whichever agent has no config file is skipped; the action fails only when
+neither has one. A `cli.json` with comments (JSONC) is not touched, because jq cannot keep its
+formatting — the action prints the path to add by hand instead. `cli.json` is per machine, so run the
+action on every machine that uses opencode.
 
 The registered command names a link, not the installation, and carries its own existence check:
 
@@ -156,9 +193,9 @@ shows up as text rather than as an unstyled bar that would read like any other m
 
 | Action | What it does |
 |---|---|
-| `install` | registers the Claude hooks in `~/.claude/settings.json` |
+| `install` | registers the Claude hooks in `~/.claude/settings.json` and the TUI plugin in opencode's `cli.json` |
 | `uninstall` | removes them again |
-| `status` | says how many of its hooks are registered, and where |
+| `status` | says how many Claude hooks are registered, whether opencode is, and where |
 | `clear` | drops both tokens from every pane that has one |
 
 Each action reports a summary as a herdr notification; the detail goes to `herdr plugin log`.
@@ -200,6 +237,12 @@ and against a stand-in `settings.json` holding a foreign hook.
 | `uninstall`, then a restart | link removed with the hooks; the startup hook did not create it again |
 | A state directory outside `$HOME` | the command is written with the absolute path instead |
 | Against live Claude Code 2.1.285 | `permission_mode` present on `UserPromptSubmit`, `PreToolUse` and `Stop`, absent on `Notification`; a hook added to settings took effect without restarting the session |
+| install, install again, uninstall on a stand-in `cli.json` holding herdr's entry | link entry appended; the second run does not rewrite the file; after uninstall the content equals the original; `./herdr-opencode` untouched |
+| A stale entry left under another state directory | swept by install, leaving only the current link |
+| A `cli.json` with comments (JSONC) | not touched; the path to add by hand is printed |
+| A machine with only opencode / with neither | Claude skipped, opencode registered / exit 1 |
+| The opencode link deleted, then the startup command (`hooks --relink`) | link made again from the entry in `cli.json` |
+| Against live opencode 2.2.6 TUI | no tokens on the home screen; a message under Build → `▍`/`build`; `shift+tab` alone → unchanged; a message under Plan → `▏`/`plan`; opencode exited → both tokens cleared. A plugin directory registered by absolute path loads |
 
 ## Third-party
 

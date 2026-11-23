@@ -22,6 +22,15 @@ state_dir=${HERDR_PLUGIN_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/herdr/
 # shellcheck disable=SC2034  # bin/hooks uses it.
 bin_link="$state_dir/bin"
 
+# opencode (#3): an opencode 2.x TUI plugin in this installation's opencode/ directory, registered in
+# opencode's cli.json "plugins" list. The registered path is a link here for the same reason as
+# bin_link — an update moves the installation, the link follows it. The config directory is found the
+# way herdr's own opencode integration finds it (src/integration/env.rs opencode_dir).
+# shellcheck disable=SC2034  # bin/hooks uses them.
+opencode_cli="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/cli.json"
+# shellcheck disable=SC2034
+opencode_link="$state_dir/opencode"
+
 # This plugin has no config file, and that is a decision rather than an omission. A sidebar rule
 # matches the token's own value, so any setting that changed the shape of that value would silently
 # stop the user's color rules from matching — a failure that looks exactly like "the mode is grey".
@@ -47,9 +56,9 @@ now_ms() {
 # a glyph nobody wrote a rule for would render as a plain grey bar and read as a mode that is fine.
 mode_glyph() {
     case "$1" in
-        plan) printf '▏\n' ;;              # read-only
+        plan) printf '▏\n' ;;              # read-only (Claude's plan, and opencode's Plan agent)
         dontAsk) printf '▎\n' ;;           # auto-denies
-        default) printf '▍\n' ;;           # manual, asks every time
+        default | build) printf '▍\n' ;;   # asks every time (Claude's manual, opencode's Build agent)
         acceptEdits) printf '▌\n' ;;       # edits go through
         auto) printf '▋\n' ;;              # a classifier decides
         bypassPermissions) printf '█\n' ;; # nothing is asked

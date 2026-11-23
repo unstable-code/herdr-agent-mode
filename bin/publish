@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Report one mode for the pane this runs in, or clear both tokens when none is given.
+#
+# Usage: publish [mode]
+#
+# The entry point for opencode/tui.js, so that the glyph table, the token names and the sequence rule
+# exist once, in lib.sh, for every agent this plugin reads. It runs inside the pane like bin/report
+# and fails just as quietly.
+set -u
+
+# shellcheck source=bin/lib.sh
+. "${0%/*}/lib.sh"
+
+in_herdr_pane || exit 0
+publish "$HERDR_PANE_ID" "${1:-}"
+exit 0
